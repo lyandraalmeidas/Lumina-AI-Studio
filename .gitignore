@@ -1,0 +1,18 @@
+.venv/
+__pycache__/
+*.py[cod]
+
+# Model weights and partial downloads are fetched at runtime.
+models/
+gfpgan/
+*.pth
+*.pth.part
+
+# Local outputs and temporary AI processing files.
+*_lumina.*
+.lumina_ai_*
+
+# Local/editor files.
+.vscode/
+.idea/
+test_write.txt
