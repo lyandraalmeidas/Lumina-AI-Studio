@@ -162,6 +162,7 @@ class App(BaseTk):
         self.v_color = tk.BooleanVar(value=True)
         self.v_face = tk.BooleanVar(value=True)
         self.v_ai = tk.BooleanVar(value=True)
+        self.v_fast_cpu = tk.BooleanVar(value=True)
         self.v_model = tk.StringVar(value="Fotos e vídeos reais")
         self.v_up = tk.BooleanVar(value=True)
         self.v_target = tk.StringVar(value="2160p (4K)")
@@ -175,6 +176,10 @@ class App(BaseTk):
                         command=self._hint, style="Section.TCheckbutton").pack(anchor="w", pady=3)
         ttk.Checkbutton(ia, text="Upscaling com IA", variable=self.v_ai,
                         command=self._hint, style="Section.TCheckbutton").pack(anchor="w", pady=3)
+        ttk.Checkbutton(
+            ia, text="Acelerar IA em CPU (pode reduzir detalhes)",
+            variable=self.v_fast_cpu, style="Section.TCheckbutton",
+        ).pack(anchor="w", pady=3)
         ttk.Label(ia, text="Perfil do modelo", style="Card.TLabel").pack(anchor="w", pady=(8, 2))
         self.cmb_model = ttk.Combobox(
             ia, textvariable=self.v_model, state="readonly",
@@ -290,6 +295,7 @@ class App(BaseTk):
             upscale=self.v_up.get(),
             use_ai=self.v_ai.get(),
             anime=self.v_model.get().startswith("Anime"),
+            fast_cpu=self.v_fast_cpu.get(),
             target_h=TARGETS[self.v_target.get()],
             sharpen=int(self.v_sharp.get()),
             stab=video and self.v_stab.get(),
@@ -483,7 +489,11 @@ class App(BaseTk):
                     fd, ai_dst = tempfile.mkstemp(prefix=".lumina_ai_", suffix=ext, dir=folder)
                     os.close(fd)
                     try:
-                        engine.process_image(self.src, ai_dst, s, ai)
+                        engine.process_image(
+                            self.src, ai_dst, s, ai,
+                            progress=lambda p, stage: self.q.put(
+                                ("image_prog", (p, stage))),
+                        )
                         os.replace(ai_dst, dst)
                     except Exception as e:
                         if os.path.exists(ai_dst):
@@ -547,7 +557,7 @@ class App(BaseTk):
                     self.status_detail.config(text="")
                 elif kind == "stage":
                     self.status.config(text=val)
-                    self.status_detail.config(text="O aplicativo está trabalhando; você pode acompanhar o progresso abaixo.")
+                    self.status_detail.config(text="O aplicativo está trabalhando; você pode acompanhar o progresso acima.")
                     self.pb.stop()
                     self.pb.configure(mode="indeterminate")
                     self.pb.start(12)
@@ -578,6 +588,14 @@ class App(BaseTk):
                     self.pb["value"] = val * 100
                     self.status.config(text=f"Processando vídeo… {val * 100:.0f}%")
                     self.status_detail.config(text="Não feche o aplicativo até o processamento terminar.")
+                elif kind == "image_prog":
+                    progress, stage = val
+                    self.pb.stop()
+                    self.pb.configure(mode="determinate")
+                    self.pb["value"] = progress * 100
+                    self.status.config(text=f"{stage}… {progress * 100:.0f}%")
+                    self.status_detail.config(
+                        text="Acompanhe o andamento do aprimoramento na barra abaixo.")
                 elif kind == "preview":
                     preview_id, before, after, box = val
                     if preview_id == self.preview_id:

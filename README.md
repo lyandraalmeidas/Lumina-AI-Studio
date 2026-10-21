@@ -76,6 +76,10 @@ funcionando.
 
 O processamento por IA em CPU pode ser lento. Uma GPU NVIDIA compatível com
 CUDA pode acelerar os modelos, mas não é obrigatória para os filtros clássicos.
+Para reduzir o tempo de upscaling em computadores sem CUDA, a opção **Acelerar
+IA em CPU** vem ativada. Ela calcula direto perto da resolução final quando o
+fator de ampliação é menor que 4×; isso pode reduzir alguns detalhes. Desative-a
+para manter o processamento original do modelo.
 
 ## Resolução de problemas
 

@@ -19,6 +19,7 @@ class Settings:
     upscale: bool = True     # ampliar até target_h
     use_ai: bool = True      # upscaling por IA (senão Lanczos)
     anime: bool = False      # modelo para anime e desenhos
+    fast_cpu: bool = False   # acelera IA em CPU com possível perda de detalhes
     target_h: int = 2160
     sharpen: int = 30        # 0-100
     stab: bool = False       # estabilização de câmera (vídeo)
@@ -110,24 +111,44 @@ def interpolate(a, b):
 
 
 # ------------------------------------------------------------ pipeline
-def restore(img, s, ai=None, t=None):
+def restore(img, s, ai=None, t=None, progress=None):
     """Ordem fixa: ruído → cor → estabilização → rostos (IA) → ampliação → nitidez."""
     f = denoise(img, s.denoise)
     if s.color:
         f = color_fix(f)
     if t is not None:
         f = shift(f, t)
+    if progress:
+        progress(0.15, "Preparando imagem")
     if ai is not None and s.face and ai.can_face:
+        if progress:
+            progress(0.2, "Restaurando rostos")
         f = ai.restore_faces(f)
+        if progress:
+            progress(0.4, "Rostos restaurados")
     if s.upscale:
         h, w = f.shape[:2]
         ow, oh = out_size(w, h, s.target_h)
         if (ow, oh) != (w, h):
             if ai is not None and s.use_ai and ai.can_upscale:
-                f = ai.upscale(f, oh / h)
+                if progress:
+                    progress(0.42, "Aplicando upscaling com IA")
+                f = ai.upscale(
+                    f, oh / h, fast_cpu=s.fast_cpu,
+                    progress=(lambda p: progress(
+                        0.42 + 0.48 * p, "Aplicando upscaling com IA",
+                    )) if progress else None,
+                )
             if f.shape[:2] != (oh, ow):
                 f = cv2.resize(f, (ow, oh), interpolation=cv2.INTER_LANCZOS4)
-    return sharpen(f, s.sharpen)
+            if progress:
+                progress(0.92, "Finalizando resolução")
+    if progress:
+        progress(0.96, "Aplicando nitidez")
+    f = sharpen(f, s.sharpen)
+    if progress:
+        progress(0.99, "Salvando resultado")
+    return f
 
 
 def make_preview(img, s, ai, center=None, pv=640, cs=256):
@@ -207,7 +228,8 @@ class VideoOut:
     def write(self, img):
         if self.proc:
             try:
-                self.proc.stdin.write(np.ascontiguousarray(img).tobytes())
+                frame = np.ascontiguousarray(img)
+                self.proc.stdin.write(memoryview(frame).cast("B"))
             except BrokenPipeError:
                 raise RuntimeError("O FFmpeg encerrou inesperadamente.")
         else:
@@ -228,8 +250,10 @@ class VideoOut:
 
 
 # ------------------------------------------------------------ processos
-def process_image(src, dst, s, ai=None):
-    write_image(dst, restore(read_image(src), s, ai))
+def process_image(src, dst, s, ai=None, progress=None):
+    write_image(dst, restore(read_image(src), s, ai, progress=progress))
+    if progress:
+        progress(1.0, "Aprimoramento concluído")
 
 
 def process_video(src, dst, s, ai, progress, cancel):

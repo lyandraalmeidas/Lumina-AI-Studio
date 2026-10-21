@@ -3,6 +3,8 @@ import os
 import sys
 import urllib.request
 
+import cv2
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 MODELS = os.path.join(HERE, "models")
 
@@ -113,9 +115,52 @@ class AIEngine:
             channel_multiplier=2, bg_upsampler=None, device=self.device)
         self.can_face = True
 
-    def upscale(self, img, scale):
-        out, _ = self.upsampler.enhance(img, outscale=scale)
+    def upscale(self, img, scale, fast_cpu=False, progress=None):
+        if fast_cpu and self.device == "cpu" and scale < 4:
+            h, w = img.shape[:2]
+            target = (max(1, round(w * scale)), max(1, round(h * scale)))
+            source = cv2.resize(
+                img,
+                (max(1, round(target[0] / 4)), max(1, round(target[1] / 4))),
+                interpolation=cv2.INTER_AREA,
+            )
+            out = self._enhance(source, 4, progress)
+            if out.shape[1::-1] != target:
+                out = cv2.resize(out, target, interpolation=cv2.INTER_LANCZOS4)
+            return out
+        out = self._enhance(img, scale, progress)
         return out
+
+    def _enhance(self, img, scale, progress):
+        if progress is None:
+            return self.upsampler.enhance(img, outscale=scale)[0]
+
+        upsampler = self.upsampler
+        original_tile_size = upsampler.tile_size
+        if self.device == "cpu" and original_tile_size == 0:
+            upsampler.tile_size = 256
+
+        h, w = img.shape[:2]
+        mod = upsampler.mod_scale or 1
+        padded_w = w + (mod - w % mod) % mod
+        padded_h = h + (mod - h % mod) % mod
+        tile_size = upsampler.tile_size
+        tiles_x = (padded_w + tile_size - 1) // tile_size if tile_size else 1
+        tiles_y = (padded_h + tile_size - 1) // tile_size if tile_size else 1
+        total = tiles_x * tiles_y
+        completed = 0
+
+        def report_tile(_model, _inputs, _output):
+            nonlocal completed
+            completed += 1
+            progress(completed / total)
+
+        hook = upsampler.model.register_forward_hook(report_tile)
+        try:
+            return upsampler.enhance(img, outscale=scale)[0]
+        finally:
+            hook.remove()
+            upsampler.tile_size = original_tile_size
 
     def restore_faces(self, img):
         _, _, out = self.restorer.enhance(img, has_aligned=False,
