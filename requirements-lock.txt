@@ -1,6 +1,5 @@
 absl-py==2.5.1
 addict==2.4.0
-altgraph==0.17.5
 basicsr==1.4.2
 certifi==2026.10.19
 charset-normalizer==3.5.2
@@ -32,15 +31,11 @@ numba==0.68.0
 numpy==1.26.4
 opencv-python==4.11.0.86
 packaging==26.3
-pefile==2024.8.26
 pillow==13.0.0
 platformdirs==4.13.5
 protobuf==7.36.2
-pyinstaller==6.22.3
-pyinstaller-hooks-contrib==2026.9
 pyparsing==3.3.3
 python-dateutil==2.9.0.post0
-pywin32-ctypes==0.2.3
 PyYAML==6.0.3
 realesrgan==0.3.0
 requests==2.34.2

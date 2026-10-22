@@ -1,8 +1,6 @@
 .venv/
 __pycache__/
 *.py[cod]
-build/
-LuminaStudio.exe
 
 # Model weights and partial downloads are fetched at runtime.
 models/

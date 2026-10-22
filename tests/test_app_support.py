@@ -18,7 +18,6 @@ from app_support import (
     resource_path,
     save_preferences,
 )
-from build_support import X64_MACHINE, pe_machine, validate_executable
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -106,12 +105,12 @@ class AppSupportTests(unittest.TestCase):
             Path(r"C:\Users\user\AppData\Roaming")
             / "LuminaStudio" / "preferences.json",
         )
-        self.assertNotIn("_MEIPASS", str(result))
 
-    def test_resource_paths_are_bounded_and_packaged_relative(self):
-        root = Path("C:/app/_internal")
+    def test_resource_paths_are_bounded_and_app_relative(self):
+        root = Path("C:/app")
         relative = Path("locales") / "en.json"
         self.assertEqual(resource_path(relative, root), root / relative)
+        self.assertEqual(resource_path("locales"), ROOT / "locales")
         with self.assertRaises(ValueError):
             resource_path("../outside.txt", root)
 
@@ -129,24 +128,7 @@ class AppSupportTests(unittest.TestCase):
         self.assertEqual(format_bytes(1536, "en"), "1.5 KB")
         self.assertEqual(format_bytes(1536, "pt_BR"), "1,5 KB")
 
-    def test_pe_machine_reads_x64_binary_headers(self):
-        header = bytearray(0x80 + 6)
-        header[0:2] = b"MZ"
-        header[0x3C:0x40] = (0x40).to_bytes(4, "little")
-        header[0x40:0x44] = b"PE\0\0"
-        header[0x44:0x46] = X64_MACHINE.to_bytes(2, "little")
-        with tempfile.TemporaryDirectory() as directory:
-            executable = Path(directory) / "app.exe"
-            executable.write_bytes(header)
-            self.assertEqual(pe_machine(executable), X64_MACHINE)
-
-    def test_onefile_validation_rejects_a_missing_executable(self):
-        with tempfile.TemporaryDirectory() as directory:
-            executable = Path(directory) / "LuminaStudio.exe"
-            with self.assertRaisesRegex(FileNotFoundError, "Executável não encontrado"):
-                validate_executable(executable)
-
-    def test_packaged_icon_contains_windows_sizes(self):
+    def test_application_icon_contains_windows_sizes(self):
         from PIL import Image
 
         with Image.open(ROOT / "assets" / "lumina.ico") as icon:

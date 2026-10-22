@@ -25,9 +25,9 @@ class Preferences:
 def resource_path(relative_path: str | Path, base_dir: Path | None = None) -> Path:
     relative = Path(relative_path)
     if relative.is_absolute() or ".." in relative.parts:
-        raise ValueError("O caminho do recurso deve permanecer dentro do pacote.")
+        raise ValueError("O caminho do recurso deve permanecer dentro do aplicativo.")
     if base_dir is None:
-        base_dir = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
+        base_dir = Path(__file__).resolve().parent
     else:
         base_dir = Path(base_dir)
     return base_dir / relative

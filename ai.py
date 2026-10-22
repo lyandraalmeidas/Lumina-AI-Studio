@@ -6,12 +6,7 @@ import urllib.request
 import cv2
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-if getattr(sys, "frozen", False):
-    APP_DATA = os.environ.get(
-        "LOCALAPPDATA", os.path.join(os.path.expanduser("~"), "AppData", "Local"))
-    MODELS = os.path.join(APP_DATA, "LuminaStudio", "models")
-else:
-    MODELS = os.path.join(HERE, "models")
+MODELS = os.path.join(HERE, "models")
 
 WEIGHTS = {
     "x4plus": ("RealESRGAN_x4plus.pth",
