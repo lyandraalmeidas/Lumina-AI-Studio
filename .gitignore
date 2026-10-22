@@ -2,7 +2,7 @@
 __pycache__/
 *.py[cod]
 build/
-dist/
+LuminaStudio.exe
 
 # Model weights and partial downloads are fetched at runtime.
 models/
@@ -17,4 +17,3 @@ gfpgan/
 # Local/editor files.
 .vscode/
 .idea/
-test_write.txt

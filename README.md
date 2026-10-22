@@ -47,33 +47,22 @@ este projeto sejam encontradas.
 
 ## Compilar e distribuir no Windows
 
-Instale o [Inno Setup 6](https://jrsoftware.org/isinfo.php), depois instale as
-dependências de compilação e gere a distribuição:
+Instale as dependências de compilação e gere o executável:
 
 ```powershell
 .\.venv\Scripts\python.exe -m pip install -r requirements-build.txt
 .\build_windows.ps1
 ```
 
-Sem o Inno Setup, gere e valide somente a pasta portátil com
-`.\build_windows.ps1 -PortableOnly`.
+O build usa **PyInstaller `--onefile`** com Python 3.12 de 64 bits. O arquivo
+único `LuminaStudio.exe` é criado na pasta principal do projeto; copie esse
+arquivo para outro local para usar o aplicativo. Não é necessário instalar o
+Inno Setup nem manter uma pasta `_internal` ao lado. Na primeira abertura, o
+Windows pode levar mais tempo enquanto o executável prepara seus recursos.
 
-O build usa **PyInstaller `--onedir`** e Python 3.12 de 64 bits. A pasta
-portátil completa fica em `dist\installer-build\LuminaStudio`; execute
-`LuminaStudio.exe` dentro dela e mantenha a pasta `_internal` ao lado. **Não
-copie nem distribua o executável sozinho**: o runtime inclui `python312.dll`,
-as bibliotecas do Visual C++, Tcl/Tk e outros recursos dentro de `_internal`.
-O erro `Failed to load Python DLL ...\internal\python312.dll` indica que o
-executável foi separado de sua pasta de runtime ou que foi usado um pacote
-antigo/incompleto.
-
-O script valida a versão e arquitetura do interpretador e da DLL, o ambiente
-virtual isolado, as versões do lock file e os arquivos essenciais da
-distribuição antes de criar o instalador. O instalador
-`dist\LuminaStudio-Setup.exe` instala a pasta completa, cria atalhos para o
-executável com o ícone existente no pacote e pode ser removido pelas
-configurações de aplicativos do Windows. A compilação mantém seus arquivos de
-trabalho em `build\installer-build` e `dist\installer-build`.
+O script valida a versão e arquitetura do interpretador, o ambiente virtual
+isolado, as versões do lock file e o executável final antes de concluir. Os
+arquivos temporários de compilação ficam em `build\exe-build`.
 
 Os modelos de IA baixados durante o uso ficam em
 `%LOCALAPPDATA%\LuminaStudio\models`, uma pasta gravável pelo usuário e
@@ -135,14 +124,10 @@ para manter o processamento original do modelo.
 - **`No module named 'cv2'` ou outra dependência ausente:** confirme que criou
   `.venv` com Python 3.12 e instale novamente com
   `.\.venv\Scripts\python.exe -m pip install -r requirements.txt`.
-- **O aplicativo não inicia após a instalação:** reinstale usando
-  `dist\LuminaStudio-Setup.exe`. Não execute uma cópia isolada de
-  `LuminaStudio.exe` da Área de Trabalho ou do OneDrive: use o atalho criado
-  pelo instalador ou mantenha o executável junto à pasta `_internal` completa.
-  Se o erro de DLL continuar mesmo com o pacote íntegro, instale ou repare o
-  Microsoft Visual C++ Redistributable 2015–2022 x64 pelo site oficial da
-  Microsoft. Para atualizar ícones antigos da barra de tarefas, desafixe o
-  atalho antigo e fixe novamente o criado pelo instalador atualizado.
+- **O aplicativo não inicia:** confirme que está usando o `LuminaStudio.exe`
+  completo, gerado pelo build mais recente. Se o erro de DLL continuar,
+  instale ou repare o Microsoft Visual C++ Redistributable 2015–2022 x64 pelo
+  site oficial da Microsoft.
 - **A janela fecha ou aparece um traceback:** inicie pelo PowerShell usando
   `.\.venv\Scripts\python.exe .\main.py` para que a mensagem de erro fique
   visível.
@@ -160,12 +145,12 @@ para manter o processamento original do modelo.
 - `ai.py`: download e carregamento dos modelos de IA.
 - `requirements.txt`: dependências Python.
 - `requirements-lock.txt`: versões fixas para builds reproduzíveis.
-- `requirements-build.txt`, `build_windows.ps1`, `build_support.py` e
-  `LuminaStudio.iss`: validação e configuração do build/instalador Windows.
+- `requirements-build.txt`, `build_windows.ps1` e `build_support.py`:
+  dependências, build e validação do executável Windows.
 - `app_support.py`: caminhos de recursos, preferências, temas e formatação.
 - `locales\`: catálogos de interface pt-BR, English e Español.
 - `tests\`: testes de interface, localização, empacotamento e processamento.
-- `assets\lumina.ico`: ícone do aplicativo e do instalador.
+- `assets\lumina.ico`: ícone do aplicativo.
 
 ## Aparência e idioma
 

@@ -1,12 +1,7 @@
-param(
-    [switch]$PortableOnly
-)
-
 $ErrorActionPreference = "Stop"
 
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $python = Join-Path $root ".venv\Scripts\python.exe"
-$iss = Join-Path $root "LuminaStudio.iss"
 $icon = Join-Path $root "assets\lumina.ico"
 $locales = Join-Path $root "locales"
 $lockFile = Join-Path $root "requirements-lock.txt"
@@ -78,34 +73,17 @@ if ($sourceDllVersion -ne $pythonInfo.version) {
     throw "A DLL do interpretador ($sourceDllVersion) não corresponde ao Python $($pythonInfo.version)."
 }
 
-$compiler = $null
-if (-not $PortableOnly) {
-    $compiler = (Get-Command "ISCC.exe" -ErrorAction SilentlyContinue).Source
-    if (-not $compiler) {
-        $candidates = @(
-            (Join-Path $env:LOCALAPPDATA "Programs\Inno Setup 6\ISCC.exe"),
-            (Join-Path ${env:ProgramFiles(x86)} "Inno Setup 6\ISCC.exe"),
-            (Join-Path $env:ProgramFiles "Inno Setup 6\ISCC.exe")
-        )
-        $compiler = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
-    }
-    if (-not $compiler) {
-        throw "Inno Setup 6 não encontrado. Instale-o ou use -PortableOnly para validar a pasta onedir."
-    }
-}
-
 Push-Location $root
 try {
-    & $python -I -m PyInstaller --noconfirm --onedir --noupx --windowed `
+    & $python -I -m PyInstaller --noconfirm --onefile --noupx --windowed `
         --clean `
         --name LuminaStudio `
         --icon $icon `
         --add-data "$icon;assets" `
         --add-data "$locales;locales" `
-        --contents-directory _internal `
-        --specpath .\build\installer-build `
-        --workpath .\build\installer-build `
-        --distpath .\dist\installer-build `
+        --specpath .\build\exe-build `
+        --workpath .\build\exe-build `
+        --distpath . `
         --collect-all tkinterdnd2 `
         --hidden-import basicsr.archs.rrdbnet_arch `
         --hidden-import realesrgan `
@@ -117,31 +95,14 @@ try {
         throw "A compilação do aplicativo falhou (código $LASTEXITCODE)."
     }
 
-    $distribution = Join-Path $root "dist\installer-build\LuminaStudio"
-    & $python -I .\build_support.py $distribution
+    $executable = Join-Path $root "LuminaStudio.exe"
+    & $python -I .\build_support.py $executable
     if ($LASTEXITCODE -ne 0) {
-        throw "A distribuição onedir está incompleta ou contém binários incompatíveis."
-    }
-    $bundledPythonDll = Join-Path $distribution "_internal\python312.dll"
-    $bundledDllVersion = (Get-Item $bundledPythonDll).VersionInfo.FileVersion
-    if ($bundledDllVersion -ne $pythonInfo.version) {
-        throw "A DLL empacotada ($bundledDllVersion) não corresponde ao Python de build ($($pythonInfo.version))."
-    }
-
-    if (-not $PortableOnly) {
-        & $compiler $iss
-        if ($LASTEXITCODE -ne 0) {
-            throw "A criação do instalador falhou (código $LASTEXITCODE)."
-        }
+        throw "O executável único está incompleto ou contém binários incompatíveis."
     }
 }
 finally {
     Pop-Location
 }
 
-if ($PortableOnly) {
-    Write-Host "Distribuição portátil criada e validada em dist\installer-build\LuminaStudio"
-}
-else {
-    Write-Host "Instalador criado em dist\LuminaStudio-Setup.exe"
-}
+Write-Host "Executável único criado e validado em .\LuminaStudio.exe"

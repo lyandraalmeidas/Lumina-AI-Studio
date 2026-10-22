@@ -18,7 +18,7 @@ from app_support import (
     resource_path,
     save_preferences,
 )
-from build_support import X64_MACHINE, pe_machine, validate_distribution
+from build_support import X64_MACHINE, pe_machine, validate_executable
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -140,12 +140,11 @@ class AppSupportTests(unittest.TestCase):
             executable.write_bytes(header)
             self.assertEqual(pe_machine(executable), X64_MACHINE)
 
-    def test_onedir_validation_rejects_executable_without_sidecar_runtime(self):
+    def test_onefile_validation_rejects_a_missing_executable(self):
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            (root / "LuminaStudio.exe").write_bytes(b"MZ")
-            with self.assertRaisesRegex(FileNotFoundError, "pasta inteira"):
-                validate_distribution(root)
+            executable = Path(directory) / "LuminaStudio.exe"
+            with self.assertRaisesRegex(FileNotFoundError, "Executável não encontrado"):
+                validate_executable(executable)
 
     def test_packaged_icon_contains_windows_sizes(self):
         from PIL import Image

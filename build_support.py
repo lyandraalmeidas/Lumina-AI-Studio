@@ -1,4 +1,4 @@
-"""Checks that a PyInstaller onedir build contains its complete Windows runtime."""
+"""Checks that a PyInstaller onefile build is a valid x64 Windows executable."""
 from __future__ import annotations
 
 import argparse
@@ -6,18 +6,6 @@ import struct
 from pathlib import Path
 
 
-REQUIRED_FILES = (
-    Path("LuminaStudio.exe"),
-    Path("_internal") / "python312.dll",
-    Path("_internal") / "python3.dll",
-    Path("_internal") / "vcruntime140.dll",
-    Path("_internal") / "vcruntime140_1.dll",
-    Path("_internal") / "vcruntime140_1.dll",
-    Path("_internal") / "assets" / "lumina.ico",
-    Path("_internal") / "locales" / "pt_BR.json",
-    Path("_internal") / "locales" / "en.json",
-    Path("_internal") / "locales" / "es.json",
-)
 X64_MACHINE = 0x8664
 
 
@@ -39,33 +27,20 @@ def pe_machine(path: Path) -> int:
         return struct.unpack("<H", machine_data)[0]
 
 
-def validate_distribution(directory: Path) -> list[Path]:
-    root = directory.resolve()
-    missing = [root / relative for relative in REQUIRED_FILES if not (root / relative).is_file()]
-    if missing:
-        files = "\n".join(f"  - {path}" for path in missing)
-        raise FileNotFoundError(
-            "Distribuição PyInstaller incompleta. Preserve a pasta _internal e "
-            "distribua a pasta inteira:\n" + files
+def validate_executable(path: Path) -> Path:
+    executable_path = path.resolve()
+    if not executable_path.is_file():
+        raise FileNotFoundError(f"Executável não encontrado: {executable_path}")
+    machine = pe_machine(executable_path)
+    if machine != X64_MACHINE:
+        raise ValueError(
+            f"Arquitetura incompatível em {executable_path}: PE 0x{machine:04X}; "
+            "é necessário um executável de 64 bits."
         )
 
-    binaries = (
-        root / "LuminaStudio.exe",
-        root / "_internal" / "python312.dll",
-        root / "_internal" / "python3.dll",
-        root / "_internal" / "vcruntime140.dll",
-        root / "_internal" / "vcruntime140_1.dll",
-    )
-    for binary in binaries:
-        machine = pe_machine(binary)
-        if machine != X64_MACHINE:
-            raise ValueError(
-                f"Arquitetura incompatível em {binary}: PE 0x{machine:04X}; "
-                "é necessário Python e executável de 64 bits."
-            )
     import pefile
 
-    executable = pefile.PE(str(root / "LuminaStudio.exe"), fast_load=True)
+    executable = pefile.PE(str(executable_path), fast_load=True)
     try:
         executable.parse_data_directories(directories=[
             pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_RESOURCE"],
@@ -79,16 +54,15 @@ def validate_distribution(directory: Path) -> list[Path]:
             )
     finally:
         executable.close()
-    return [root / relative for relative in REQUIRED_FILES]
+    return executable_path
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("distribution", type=Path)
+    parser.add_argument("executable", type=Path)
     args = parser.parse_args()
-    files = validate_distribution(args.distribution)
-    print(f"Distribuição onedir validada ({len(files)} arquivos essenciais): "
-          f"{args.distribution.resolve()}")
+    executable = validate_executable(args.executable)
+    print(f"Executável único validado: {executable}")
 
 
 if __name__ == "__main__":
