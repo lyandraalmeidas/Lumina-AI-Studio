@@ -23,7 +23,7 @@ from app_support import (
 ROOT = Path(__file__).resolve().parents[1]
 KEY_PREFIX = re.compile(
     r"^(?:app|action|media|preview|preferences|theme|language|section|"
-    r"option|model|output|status|hint|dialog|engine|stage)\."
+    r"option|filter|model|output|status|hint|dialog|engine|stage)\."
 )
 
 
@@ -46,6 +46,9 @@ class AppSupportTests(unittest.TestCase):
         }
         constants.update(f"theme.{theme}" for theme in ("auto", "light", "dark"))
         constants.update(f"language.{language}" for language in LANGUAGES)
+        constants.update(
+            f"filter.{name}" for name in
+            ("original", "vivid", "warm", "cool", "noir", "vintage", "fade"))
 
         keys = key_sets[0]
         self.assertEqual(constants - keys, set(), "Missing translation keys")

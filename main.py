@@ -208,6 +208,7 @@ class App(BaseTk):
         self.v_target = tk.StringVar(value="2160p (4K)")
         self.v_stab = tk.BooleanVar(value=False)
         self.v_interp = tk.BooleanVar(value=False)
+        self.v_fast_video = tk.BooleanVar(value=True)
 
         preferences = self._section(right, "preferences.title")
         preferences.grid(row=0, column=0, sticky="ew", pady=(0, 10))
@@ -254,10 +255,19 @@ class App(BaseTk):
 
         aj = self._section(right, "section.adjustments")
         aj.grid(row=2, column=0, sticky="ew", pady=(0, 10))
-        self._add_scale(aj, "option.denoise", self.v_denoise, 0)
+        self._label(aj, "option.filter", "Card.TLabel").grid(
+            row=0, column=0, sticky="w")
+        self.cmb_filter = ttk.Combobox(
+            aj, state="readonly",
+            values=[self.t(f"filter.{name}") for name in engine.FILTERS],
+            takefocus=True)
+        self.cmb_filter.grid(row=1, column=0, sticky="ew", pady=(3, 8))
+        self.cmb_filter.current(0)
+        self.cmb_filter.bind("<<ComboboxSelected>>", self._on_filter_selected)
+        self._add_scale(aj, "option.denoise", self.v_denoise, 2)
         self._checkbutton(aj, "option.color", self.v_color).grid(
-            row=2, column=0, sticky="w", pady=(8, 2))
-        self._add_scale(aj, "option.sharpness", self.v_sharp, 3)
+            row=4, column=0, sticky="w", pady=(8, 2))
+        self._add_scale(aj, "option.sharpness", self.v_sharp, 5)
 
         out = self._section(right, "section.output")
         out.grid(row=3, column=0, sticky="ew", pady=(0, 10))
@@ -272,6 +282,9 @@ class App(BaseTk):
         self.chk_stab.pack(anchor="w", pady=3)
         self.chk_interp = self._checkbutton(out, "option.interpolate", self.v_interp)
         self.chk_interp.pack(anchor="w", pady=3)
+        self.chk_fast_video = self._checkbutton(
+            out, "option.fast_video", self.v_fast_video)
+        self.chk_fast_video.pack(anchor="w", pady=3)
 
         self.lbl_hint = ttk.Label(
             right, text="", style="Muted.TLabel", wraplength=300, justify="left")
@@ -494,18 +507,23 @@ class App(BaseTk):
             theme_index = self.cmb_theme.current()
             language_index = self.cmb_language.current()
             model_index = self.cmb_model.current()
+            filter_index = self.cmb_filter.current()
             self.cmb_theme.configure(
                 values=[self.t(f"theme.{theme}") for theme in THEMES])
             self.cmb_language.configure(
                 values=[self.t(f"language.{language}") for language in LANGUAGES])
             self.cmb_model.configure(
                 values=[self.t("model.photo"), self.t("model.anime")])
+            self.cmb_filter.configure(
+                values=[self.t(f"filter.{name}") for name in engine.FILTERS])
             if theme_index >= 0:
                 self.cmb_theme.current(theme_index)
             if language_index >= 0:
                 self.cmb_language.current(language_index)
             if model_index >= 0:
                 self.cmb_model.current(model_index)
+            if filter_index >= 0:
+                self.cmb_filter.current(filter_index)
         if getattr(self, "src", None) and self.first is not None:
             height, width = self.first.shape[:2]
             self.lbl_file.configure(text=self.t(
@@ -634,6 +652,7 @@ class App(BaseTk):
         self.lbl_hint.config(text=" ".join(msgs))
         self.chk_stab.config(state="normal" if self.kind == "video" else "disabled")
         self.chk_interp.config(state="normal" if self.kind == "video" else "disabled")
+        self.chk_fast_video.config(state="normal" if self.kind == "video" else "disabled")
         self.cmb_model.config(
             state="readonly" if self.v_ai.get() and self.v_up.get() else "disabled")
         self.cmb_target.config(state="readonly" if self.v_up.get() else "disabled")
@@ -660,6 +679,8 @@ class App(BaseTk):
             sharpen=int(self.v_sharp.get()),
             stab=video and self.v_stab.get(),
             interp=video and self.v_interp.get(),
+            fast_video=self.v_fast_video.get(),
+            filter_name=engine.FILTERS[self.cmb_filter.current()],
         )
 
     def _busy(self, on, cancellable=False):
@@ -745,27 +766,30 @@ class App(BaseTk):
         s = self.settings()
         self.preview_id += 1
         preview_id = self.preview_id
-        frame = self.first.copy()
+        frame = self.first
         center = self.center
+        video = self.kind == "video"
         self._set_status("status.preview")
-        self._set_detail("status.preview_detail")
+        self._set_detail(
+            "status.preview_video_detail" if video else "status.preview_detail")
         self._busy(True)
         threading.Thread(
             target=self._preview_job,
-            args=(s, preview_id, frame, center),
+            args=(s, preview_id, frame, center, video),
             daemon=True,
         ).start()
 
-    def _preview_job(self, s, preview_id, frame, center):
+    def _preview_job(self, s, preview_id, frame, center, video):
         try:
-            before, after, box = engine.make_preview(frame, s, None, center, PV)
+            before, after, box = engine.make_preview(
+                frame, s, None, center, PV, video=video)
             self.q.put(("preview", (preview_id, before, after, box)))
         except Exception as e:
             traceback.print_exc()
             self.q.put(("err", str(e)))
             self.q.put(("idle", None))
             return
-        if s.face or (s.use_ai and s.upscale):
+        if not video and (s.face or (s.use_ai and s.upscale)):
             threading.Thread(
                 target=self._ai_preview_job,
                 args=(s, preview_id, frame, center),
@@ -797,6 +821,9 @@ class App(BaseTk):
         display_x, size = self._display_rect[0], self._display_rect[2]
         self.split = min(max((e.x - display_x) / size, 0.0), 1.0)
         self._compose()
+
+    def _on_filter_selected(self, _event=None):
+        self.preview()
 
     def _on_pick(self, e):
         if not self.box or self.busy:

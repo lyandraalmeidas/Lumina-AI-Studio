@@ -9,6 +9,27 @@ import numpy as np
 
 VIDEO_EXT = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".m4v"}
 IMAGE_EXT = {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tif", ".tiff"}
+FILTERS = ("original", "vivid", "warm", "cool", "noir", "vintage", "fade")
+FILTER_TRANSFORMS = {
+    "vivid": np.array(
+        ((1.16, -0.08, -0.08, 0), (-0.08, 1.16, -0.08, 0),
+         (-0.08, -0.08, 1.16, 0)), dtype=np.float32),
+    "warm": np.array(
+        ((0.90, 0, 0, 0), (0, 1.02, 0, 2), (0, 0, 1.08, 8)),
+        dtype=np.float32),
+    "cool": np.array(
+        ((1.08, 0, 0, 8), (0, 1.02, 0, 2), (0, 0, 0.90, 0)),
+        dtype=np.float32),
+    "noir": np.array(
+        ((0.114, 0.587, 0.299, 0), (0.114, 0.587, 0.299, 0),
+         (0.114, 0.587, 0.299, 0)), dtype=np.float32),
+    "vintage": np.array(
+        ((0.131, 0.534, 0.272, 0), (0.168, 0.686, 0.349, 0),
+         (0.189, 0.769, 0.393, 0)), dtype=np.float32),
+    "fade": np.array(
+        ((0.82, 0, 0, 24), (0, 0.82, 0, 24), (0, 0, 0.82, 24)),
+        dtype=np.float32),
+}
 
 
 @dataclass
@@ -24,6 +45,8 @@ class Settings:
     sharpen: int = 30        # 0-100
     stab: bool = False       # estabilização de câmera (vídeo)
     interp: bool = False     # dobra o fps (vídeo)
+    fast_video: bool = True
+    filter_name: str = "original"
 
 
 def out_size(w, h, target_h):
@@ -37,12 +60,21 @@ def out_size(w, h, target_h):
 
 
 # ------------------------------------------------------------ clássico
-def denoise(img, amount):
+def denoise(img, amount, fast=False):
     if amount <= 0:
         return img
     a = amount / 100.0
-    smooth = cv2.bilateralFilter(img, 7, 20 + 60 * a, 7)
+    smooth = cv2.bilateralFilter(img, 3 if fast else 7, 20 + 60 * a, 3 if fast else 7)
     return cv2.addWeighted(img, 1 - 0.7 * a, smooth, 0.7 * a, 0)
+
+
+def apply_filter(img, filter_name):
+    if filter_name not in FILTERS:
+        raise ValueError(f"Filtro não suportado: {filter_name}")
+    if filter_name == "original":
+        return img
+
+    return cv2.transform(img, FILTER_TRANSFORMS[filter_name])
 
 
 def color_fix(img):
@@ -119,9 +151,10 @@ def interpolate(a, b):
 
 
 # ------------------------------------------------------------ pipeline
-def restore(img, s, ai=None, t=None, progress=None):
-    """Ordem fixa: ruído → cor → estabilização → rostos (IA) → ampliação → nitidez."""
-    f = denoise(img, s.denoise)
+def restore(img, s, ai=None, t=None, progress=None, video=False):
+    """Ordem fixa: ruído → filtro → cor → estabilização → IA → ampliação → nitidez."""
+    f = denoise(img, s.denoise, fast=video and s.fast_video)
+    f = apply_filter(f, s.filter_name)
     if s.color:
         f = color_fix(f)
     if t is not None:
@@ -159,7 +192,7 @@ def restore(img, s, ai=None, t=None, progress=None):
     return f
 
 
-def make_preview(img, s, ai, center=None, pv=640, cs=256):
+def make_preview(img, s, ai, center=None, pv=640, cs=256, video=False):
     """Processa um recorte central (ou escolhido) para a prévia rápida."""
     h, w = img.shape[:2]
     cs = min(cs, h, w)
@@ -167,7 +200,7 @@ def make_preview(img, s, ai, center=None, pv=640, cs=256):
     x0 = int(np.clip(cx - cs // 2, 0, w - cs))
     y0 = int(np.clip(cy - cs // 2, 0, h - cs))
     crop = img[y0:y0 + cs, x0:x0 + cs].copy()
-    after = restore(crop, s, ai)
+    after = restore(crop, s, ai, video=video)
     before = cv2.resize(crop, (pv, pv), interpolation=cv2.INTER_CUBIC)
     after = cv2.resize(after, (pv, pv), interpolation=cv2.INTER_AREA)
     return before, after, (x0, y0, cs)
@@ -277,26 +310,27 @@ def process_video(src, dst, s, ai, progress, cancel):
     if not cap.isOpened():
         cap.release()
         raise ValueError("Não foi possível abrir o vídeo.")
-    try:
-        fps = cap.get(cv2.CAP_PROP_FPS)
-        total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    finally:
-        cap.release()
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     if w < 1 or h < 1:
+        cap.release()
         raise ValueError("Não foi possível abrir o vídeo.")
     if not np.isfinite(fps) or fps <= 0:
         fps = 30.0
 
     ow, oh = out_size(w, h, s.target_h) if s.upscale else (w - w % 2, h - h % 2)
     out_fps = fps * 2 if s.interp else fps
-    corr = trajectory_corrections(src) if s.stab else None
-
-    cap = cv2.VideoCapture(src)
-    if not cap.isOpened():
+    if s.stab:
         cap.release()
-        raise ValueError("Não foi possível abrir o vídeo.")
+        corr = trajectory_corrections(src)
+        cap = cv2.VideoCapture(src)
+        if not cap.isOpened():
+            cap.release()
+            raise ValueError("Não foi possível abrir o vídeo.")
+    else:
+        corr = None
     out = None
     prev, i = None, 0
     try:
@@ -304,7 +338,7 @@ def process_video(src, dst, s, ai, progress, cancel):
         ok, f = cap.read()
         while ok and not cancel.is_set():
             t = corr[i] if corr is not None and i < len(corr) else None
-            cur = restore(f, s, ai, t)[:oh, :ow]
+            cur = restore(f, s, ai, t, video=True)[:oh, :ow]
             if s.interp and prev is not None:
                 out.write(interpolate(prev, cur))
             out.write(cur)

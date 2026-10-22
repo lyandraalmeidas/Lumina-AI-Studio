@@ -67,8 +67,10 @@ Execute a suíte de testes com:
 1. Clique em **Abrir foto ou vídeo** e escolha um arquivo. Também é possível
    arrastar um arquivo para a área da prévia, se o suporte a arrastar e soltar
    estiver disponível.
-2. Ajuste as opções no painel. Passe o cursor sobre a barra de rolagem ou use a
-   roda do mouse para ver todas as configurações.
+2. Ajuste as opções no painel. Experimente os filtros **Vibrante**, **Quente**,
+   **Frio**, **Preto e branco**, **Vintage** e **Desbotado** e compare o
+   resultado na prévia antes de salvar. Passe o cursor sobre a barra de rolagem
+   ou use a roda do mouse para ver todas as configurações.
 3. Arraste a linha vertical sobre a prévia para comparar antes e depois. Use o
    botão direito do mouse para escolher outra área da imagem.
 4. Clique em **Processar e salvar** e escolha onde guardar o resultado. A
@@ -97,6 +99,12 @@ Para reduzir o tempo de upscaling em computadores sem CUDA, a opção **Acelerar
 IA em CPU** vem ativada. Ela calcula direto perto da resolução final quando o
 fator de ampliação é menor que 4×; isso pode reduzir alguns detalhes. Desative-a
 para manter o processamento original do modelo.
+
+Na abertura de um vídeo, a prévia não carrega modelos de IA automaticamente;
+isso evita downloads e inicializações longas só para mostrar o primeiro quadro.
+Durante o processamento, **Redução de ruído rápida em vídeos** vem ativada e
+usa um filtro menor para acelerar cada quadro. Desative-a se preferir o filtro
+de redução de ruído mais detalhado, sabendo que o vídeo levará mais tempo.
 
 ## Resolução de problemas
 

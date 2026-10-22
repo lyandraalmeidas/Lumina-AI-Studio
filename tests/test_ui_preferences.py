@@ -2,6 +2,7 @@ import unittest
 from unittest.mock import patch
 
 from app_support import LANGUAGES, THEMES, Preferences, load_catalogs
+import engine
 from main import App
 
 
@@ -18,6 +19,7 @@ class InterfacePreferenceTests(unittest.TestCase):
             app.v_sharp.set(61)
             app.v_face.set(False)
             app.v_color.set(False)
+            app.cmb_filter.current(engine.FILTERS.index("vintage"))
             app.split = 0.27
 
             app.cmb_theme.current(THEMES.index("dark"))
@@ -30,6 +32,8 @@ class InterfacePreferenceTests(unittest.TestCase):
             self.assertEqual(app.v_sharp.get(), 61)
             self.assertFalse(app.v_face.get())
             self.assertFalse(app.v_color.get())
+            self.assertEqual(
+                app.cmb_filter.current(), engine.FILTERS.index("vintage"))
             self.assertEqual(app.split, 0.27)
 
             catalogs = load_catalogs()
@@ -45,8 +49,25 @@ class InterfacePreferenceTests(unittest.TestCase):
             self.assertEqual(app.v_sharp.get(), 61)
             self.assertFalse(app.v_face.get())
             self.assertFalse(app.v_color.get())
+            self.assertEqual(
+                app.cmb_filter.current(), engine.FILTERS.index("vintage"))
             self.assertEqual(app.split, 0.27)
             self.assertEqual(save_preferences_mock.call_count, len(LANGUAGES) + 2)
+        finally:
+            app._destroy_app()
+
+    @patch("main.engine.make_preview", return_value=(None, None, None))
+    @patch.object(App, "_get_ai")
+    def test_video_preview_does_not_load_ai_models(
+        self, get_ai_mock, _make_preview_mock
+    ):
+        app = App()
+        app.withdraw()
+        try:
+            app._preview_job(engine.Settings(), 1, object(), None, True)
+            get_ai_mock.assert_not_called()
+            self.assertEqual(app.q.get_nowait()[0], "preview")
+            self.assertEqual(app.q.get_nowait()[0], "idle")
         finally:
             app._destroy_app()
 
