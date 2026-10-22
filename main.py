@@ -39,6 +39,24 @@ except ImportError:
 PV = 520  # tamanho da prévia em pixels
 TARGETS = {"1080p (Full HD)": 1080, "1440p (2K)": 1440,
            "2160p (4K)": 2160, "4320p (8K)": 4320}
+UI_ICONS = {
+    "preferences.title": "⚙",
+    "section.ai": "✦",
+    "section.adjustments": "◉",
+    "section.output": "▣",
+    "action.open": "＋",
+    "action.refresh_preview": "◉",
+    "action.process": "✧",
+    "action.cancel": "×",
+    "option.face": "◉",
+    "option.upscale_ai": "↗",
+    "option.fast_cpu": "◇",
+    "option.color": "◐",
+    "option.upscale": "↗",
+    "option.stabilize": "⌖",
+    "option.interpolate": "⧖",
+    "option.fast_video": "≋",
+}
 
 
 class App(BaseTk):
@@ -126,9 +144,14 @@ class App(BaseTk):
         self.lbl_title.grid(row=0, column=0, sticky="w")
         self.lbl_subtitle = self._label(header, "app.subtitle", "Muted.TLabel")
         self.lbl_subtitle.grid(row=1, column=0, sticky="w", pady=(3, 0))
+        self.studio_badge = tk.Label(
+            header, text="LUMINA AI LAB • STUDIO MODE",
+            bg="#1b2030", fg="#d5c7ff", bd=0, font=("Segoe UI", 8, "bold"),
+            padx=10, pady=4)
+        self.studio_badge.grid(row=0, column=1, sticky="ne", padx=(12, 0))
         self.btn_open = self._button(
             header, "action.open", self.open_dialog, "Secondary.TButton")
-        self.btn_open.grid(row=0, column=1, rowspan=2, sticky="e", padx=(12, 0))
+        self.btn_open.grid(row=1, column=1, sticky="e", padx=(12, 0), pady=(6, 0))
         self.accent_bar = tk.Canvas(
             header, height=4, highlightthickness=0, bd=0)
         self.accent_bar.grid(
@@ -325,17 +348,21 @@ class App(BaseTk):
         widget.configure(text=self.t(key))
         return widget
 
+    def _localized_text(self, key):
+        icon = UI_ICONS.get(key)
+        return f"{icon}  {self.t(key)}" if icon else self.t(key)
+
     def _button(self, parent, key, command, style, **options):
         widget = ttk.Button(parent, command=command, style=style, **options)
         self._localized_widgets.append((widget, key, "text"))
-        widget.configure(text=self.t(key))
+        widget.configure(text=self._localized_text(key))
         return widget
 
     def _section(self, parent, key):
         widget = ttk.LabelFrame(
-            parent, style="Section.TLabelframe", padding=12, takefocus=False)
+            parent, style="Section.TLabelframe", padding=14, takefocus=False)
         self._localized_widgets.append((widget, key, "text"))
-        widget.configure(text=self.t(key))
+        widget.configure(text=self._localized_text(key))
         return widget
 
     def _checkbutton(self, parent, key, variable, command=None):
@@ -343,7 +370,7 @@ class App(BaseTk):
             parent, variable=variable, command=command,
             style="Section.TCheckbutton", takefocus=True)
         self._localized_widgets.append((widget, key, "text"))
-        widget.configure(text=self.t(key))
+        widget.configure(text=self._localized_text(key))
         return widget
 
     def _add_scale(self, parent, label_key, variable, row):
@@ -368,20 +395,22 @@ class App(BaseTk):
         self.theme = theme
         palettes = {
             "dark": {
-                "background": "#101827", "surface": "#1B2A3A",
-                "surface_raised": "#223449", "border": "#344A60",
-                "text": "#F5F4F0", "muted": "#AAB6C4",
-                "blue": "#527FA8", "orange": "#B85D2A",
-                "amber": "#D98236", "gold": "#D9AD48",
-                "preview": "#101827", "disabled": "#718093",
+                "background": "#0D1117", "surface": "#131B29",
+                "surface_raised": "#1B2434", "border": "#2E3A4F",
+                "text": "#EEF2FF", "muted": "#A7AFBF",
+                "blue": "#7C6AF1", "orange": "#C778FF",
+                "amber": "#A58BFF", "gold": "#F3C98B",
+                "preview": "#0F1726", "disabled": "#58657A",
+                "lavender": "#B9A9FF",
             },
             "light": {
-                "background": "#F0E8D8", "surface": "#F5F4F0",
-                "surface_raised": "#FFFFFF", "border": "#C6D1DB",
-                "text": "#18283A", "muted": "#526274",
-                "blue": "#426D96", "orange": "#A94D20",
-                "amber": "#B85D2A", "gold": "#8B6A14",
-                "preview": "#E3E8ED", "disabled": "#7C8792",
+                "background": "#F3F0ED", "surface": "#F7F4F1",
+                "surface_raised": "#FFFFFF", "border": "#D8D0C8",
+                "text": "#1C2430", "muted": "#5D6977",
+                "blue": "#7B6FE5", "orange": "#B49BFF",
+                "amber": "#C7B7FF", "gold": "#B98852",
+                "preview": "#EFEAE3", "disabled": "#8F9AAF",
+                "lavender": "#7B6FE5",
             },
         }
         self.colors = palettes[theme]
@@ -407,21 +436,22 @@ class App(BaseTk):
         style.configure(
             "Section.TLabelframe", background=c["surface"], foreground=c["text"],
             bordercolor=c["border"], lightcolor=c["border"], darkcolor=c["border"],
-            relief="solid", borderwidth=1)
+            relief="flat", borderwidth=1)
         style.configure(
             "Section.TLabelframe.Label", background=c["surface"], foreground=c["blue"],
             font=("Segoe UI Semibold", 10))
         style.configure(
             "Section.TCheckbutton", background=c["surface"], foreground=c["text"],
-            padding=(2, 4), focuscolor=c["gold"])
+            padding=(5, 7), focuscolor=c["lavender"],
+            font=("Segoe UI", 10))
         style.map(
             "Section.TCheckbutton",
             background=[("active", c["surface_raised"])],
             foreground=[("disabled", c["disabled"])])
         style.configure(
             "Primary.TButton", background=c["orange"], foreground="#FFFFFF",
-            padding=(14, 10), bordercolor=c["orange"],
-            font=("Segoe UI Semibold", 10), focuscolor=c["gold"])
+            padding=(16, 11), bordercolor=c["orange"], borderwidth=0,
+            font=("Segoe UI Semibold", 10), focuscolor=c["lavender"])
         style.map(
             "Primary.TButton",
             background=[("active", c["amber"]), ("pressed", c["amber"]),
@@ -429,7 +459,7 @@ class App(BaseTk):
             foreground=[("disabled", "#FFFFFF")])
         style.configure(
             "Secondary.TButton", background=c["surface_raised"], foreground=c["text"],
-            padding=(11, 8), bordercolor=c["border"], focuscolor=c["gold"])
+            padding=(13, 9), bordercolor=c["border"], focuscolor=c["lavender"])
         style.map(
             "Secondary.TButton",
             background=[("active", c["blue"]), ("pressed", c["blue"]),
@@ -468,6 +498,8 @@ class App(BaseTk):
             self.view.itemconfigure(self._empty_preview, fill=c["muted"])
         if hasattr(self, "settings_canvas"):
             self.settings_canvas.configure(background=c["surface"])
+        if hasattr(self, "studio_badge"):
+            self.studio_badge.configure(bg=c["surface_raised"], fg=c["lavender"])
         self._refresh_locale_widgets()
 
     def _draw_accent(self, _event=None):
@@ -478,7 +510,7 @@ class App(BaseTk):
             return
         start = tuple(int(self.colors["blue"][index:index + 2], 16)
                       for index in (1, 3, 5))
-        middle = tuple(int(self.colors["orange"][index:index + 2], 16)
+        middle = tuple(int(self.colors["lavender"][index:index + 2], 16)
                        for index in (1, 3, 5))
         end = tuple(int(self.colors["gold"][index:index + 2], 16)
                     for index in (1, 3, 5))
@@ -501,7 +533,8 @@ class App(BaseTk):
 
     def _refresh_locale_widgets(self):
         for widget, key, option in self._localized_widgets:
-            widget.configure(**{option: self.t(key)})
+            text = self._localized_text(key) if option == "text" else self.t(key)
+            widget.configure(**{option: text})
         self.title(self.t("app.title"))
         if hasattr(self, "cmb_theme"):
             theme_index = self.cmb_theme.current()
