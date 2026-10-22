@@ -6,7 +6,12 @@ import urllib.request
 import cv2
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-MODELS = os.path.join(HERE, "models")
+if getattr(sys, "frozen", False):
+    APP_DATA = os.environ.get(
+        "LOCALAPPDATA", os.path.join(os.path.expanduser("~"), "AppData", "Local"))
+    MODELS = os.path.join(APP_DATA, "LuminaStudio", "models")
+else:
+    MODELS = os.path.join(HERE, "models")
 
 WEIGHTS = {
     "x4plus": ("RealESRGAN_x4plus.pth",
@@ -32,6 +37,8 @@ def _weight(key, log, progress=None):
     name, url = WEIGHTS[key]
     os.makedirs(MODELS, exist_ok=True)
     path = os.path.join(MODELS, name)
+    if os.path.exists(path) and os.path.getsize(path) == 0:
+        os.remove(path)
     if not os.path.exists(path):
         log(f"Baixando modelo {name} (só na primeira vez)…")
         tmp = path + ".part"
@@ -51,12 +58,21 @@ def _weight(key, log, progress=None):
                         downloaded += len(chunk)
                         if progress:
                             progress(name, downloaded, total)
+            if downloaded == 0 or (total and downloaded != total):
+                raise OSError(
+                    f"Download incompleto para {name}: recebidos {downloaded} "
+                    f"bytes; esperados {total}."
+                )
             os.replace(tmp, path)
             if progress:
                 progress(name, downloaded, total or downloaded)
-        except Exception:
-            if os.path.exists(tmp):
+        except Exception as error:
+            try:
                 os.remove(tmp)
+            except FileNotFoundError:
+                pass
+            except OSError as cleanup_error:
+                error.add_note(f"Falha ao remover o download temporário: {cleanup_error}")
             raise
     return path
 

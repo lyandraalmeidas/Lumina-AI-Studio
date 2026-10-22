@@ -75,17 +75,25 @@ def trajectory_corrections(path, radius=20):
     cap = cv2.VideoCapture(path)
     x = y = 0.0
     traj, prev = [], None
-    ok, f = cap.read()
-    while ok:
-        g = cv2.cvtColor(cv2.resize(f, None, fx=0.5, fy=0.5), cv2.COLOR_BGR2GRAY).astype(np.float32)
-        if prev is not None:
-            (dx, dy), _ = cv2.phaseCorrelate(prev, g)
-            x += dx * 2
-            y += dy * 2
-        traj.append((x, y))
-        prev = g
+    if not cap.isOpened():
+        cap.release()
+        raise ValueError("Não foi possível abrir o vídeo.")
+    try:
         ok, f = cap.read()
-    cap.release()
+        while ok:
+            g = cv2.cvtColor(
+                cv2.resize(f, None, fx=0.5, fy=0.5),
+                cv2.COLOR_BGR2GRAY,
+            ).astype(np.float32)
+            if prev is not None:
+                (dx, dy), _ = cv2.phaseCorrelate(prev, g)
+                x += dx * 2
+                y += dy * 2
+            traj.append((x, y))
+            prev = g
+            ok, f = cap.read()
+    finally:
+        cap.release()
     if not traj:
         return None
     traj = np.array(traj)
@@ -199,8 +207,11 @@ def read_first_frame(path):
 def find_ffmpeg():
     try:
         import imageio_ffmpeg
+    except ImportError:
+        return shutil.which("ffmpeg")
+    try:
         return imageio_ffmpeg.get_ffmpeg_exe()
-    except Exception:
+    except (OSError, RuntimeError):
         return shutil.which("ffmpeg")
 
 
@@ -219,7 +230,12 @@ class VideoOut:
                    "-i", src, "-map", "0:v:0", "-map", "1:a?",
                    "-c:v", "libx264", "-preset", "slow", "-crf", "16", "-pix_fmt", "yuv420p",
                    "-c:a", "aac", "-b:a", "192k", "-shortest", dst]
-            self.proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=subprocess.PIPE)
+            self.proc = subprocess.Popen(
+                cmd,
+                stdin=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
         else:
             self.writer = cv2.VideoWriter(dst, cv2.VideoWriter_fourcc(*"mp4v"), fps, (self.w, self.h))
             if not self.writer.isOpened():
@@ -259,21 +275,32 @@ def process_image(src, dst, s, ai=None, progress=None):
 def process_video(src, dst, s, ai, progress, cancel):
     cap = cv2.VideoCapture(src)
     if not cap.isOpened():
+        cap.release()
         raise ValueError("Não foi possível abrir o vídeo.")
-    fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
-    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    cap.release()
+    try:
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    finally:
+        cap.release()
+    if w < 1 or h < 1:
+        raise ValueError("Não foi possível abrir o vídeo.")
+    if not np.isfinite(fps) or fps <= 0:
+        fps = 30.0
 
     ow, oh = out_size(w, h, s.target_h) if s.upscale else (w - w % 2, h - h % 2)
     out_fps = fps * 2 if s.interp else fps
     corr = trajectory_corrections(src) if s.stab else None
 
     cap = cv2.VideoCapture(src)
-    out = VideoOut(dst, (ow, oh), out_fps, src)
+    if not cap.isOpened():
+        cap.release()
+        raise ValueError("Não foi possível abrir o vídeo.")
+    out = None
     prev, i = None, 0
     try:
+        out = VideoOut(dst, (ow, oh), out_fps, src)
         ok, f = cap.read()
         while ok and not cancel.is_set():
             t = corr[i] if corr is not None and i < len(corr) else None
@@ -287,11 +314,13 @@ def process_video(src, dst, s, ai, progress, cancel):
                 progress(min(i / total, 1.0))
             ok, f = cap.read()
     except BaseException:
-        out.close(abort=True)
+        if out is not None:
+            out.close(abort=True)
         raise
     finally:
         cap.release()
-    out.close(abort=cancel.is_set())
+    if out is not None:
+        out.close(abort=cancel.is_set())
 
 
 def load_ai(anime, log=print, progress=None, load_upscaler=True, load_face=True):

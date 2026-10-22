@@ -1,16 +1,32 @@
 """Lumina Studio — interface gráfica (uso pessoal, sem créditos ou limites)."""
+import ctypes
 import os
 import queue
 import tempfile
 import threading
 import tkinter as tk
 import traceback
+from dataclasses import replace
+from pathlib import Path
 from tkinter import ttk, filedialog, messagebox
 
 import cv2
 from PIL import Image, ImageTk
 
 import engine
+from app_support import (
+    LANGUAGES,
+    THEMES,
+    Preferences,
+    Translator,
+    format_bytes,
+    load_catalogs,
+    load_preferences,
+    resolve_theme,
+    resource_path,
+    save_preferences,
+    system_theme,
+)
 from engine import Settings, VIDEO_EXT, IMAGE_EXT
 
 try:
@@ -27,10 +43,42 @@ TARGETS = {"1080p (Full HD)": 1080, "1440p (2K)": 1440,
 
 class App(BaseTk):
     def __init__(self):
+        self.startup_warnings = []
+        if os.name == "nt":
+            try:
+                set_app_user_model_id = (
+                    ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID)
+                set_app_user_model_id.argtypes = [ctypes.c_wchar_p]
+                set_app_user_model_id.restype = ctypes.c_long
+                result = set_app_user_model_id("LuminaStudio.Desktop")
+                if result != 0:
+                    self.startup_warnings.append(
+                        f"AppUserModelID HRESULT 0x{result & 0xFFFFFFFF:08X}")
+            except (AttributeError, OSError) as error:
+                self.startup_warnings.append(str(error))
         super().__init__()
-        self.title("Lumina Studio")
-        self.geometry("1360x860")
-        self.minsize(1080, 700)
+        self.catalogs = load_catalogs()
+        preferences, preference_warning = load_preferences()
+        self.preferences = preferences
+        self.translator = Translator(self.catalogs, preferences.language)
+        self.theme = resolve_theme(preferences.theme, system_theme())
+        self._localized_widgets = []
+        self._status_state = None
+        self._detail_state = None
+        self._auto_theme_job = None
+        if preference_warning:
+            self.startup_warnings.append(preference_warning)
+
+        self.title(self.t("app.title"))
+        if os.name == "nt":
+            icon_path = resource_path(Path("assets") / "lumina.ico")
+            try:
+                self.iconbitmap(str(icon_path))
+            except tk.TclError as error:
+                self.startup_warnings.append(
+                    self.t("dialog.resource_error", path=icon_path) + f" ({error})")
+        self.geometry("1280x820")
+        self.minsize(940, 680)
 
         self.src = None
         self.kind = None
@@ -48,80 +96,72 @@ class App(BaseTk):
         self.cancel = threading.Event()
         self.q = queue.Queue()
         self._photo = None
+        self._load_generation = 0
+        self._close_when_idle = False
 
         self._build()
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
+        self.bind_all("<Control-o>", lambda _event: self.open_dialog())
+        self.bind_all("<Control-O>", lambda _event: self.open_dialog())
+        self.bind_all("<Control-Return>", lambda _event: self.start())
         self.btn_prev.config(state="disabled")
         self.btn_go.config(state="disabled")
+        if self.startup_warnings:
+            self._set_detail("status.startup_warning", error="; ".join(self.startup_warnings))
         self.after(80, self._poll)
+        self._schedule_auto_theme_check()
 
     # ----------------------------------------------------------- layout
     def _build(self):
         style = ttk.Style(self)
         style.theme_use("clam")
-        style.configure(".", font=("Segoe UI", 10))
-        style.configure("TFrame", background="#171b24")
-        style.configure("Card.TFrame", background="#202633")
-        style.configure("TLabel", background="#171b24", foreground="#e7eaf0")
-        style.configure("Muted.TLabel", background="#171b24", foreground="#aab3c2")
-        style.configure("Card.TLabel", background="#202633", foreground="#e7eaf0")
-        style.configure("Title.TLabel", background="#171b24", foreground="#f4f6fa",
-                        font=("Segoe UI Semibold", 19))
-        style.configure("Section.TLabelframe", background="#202633",
-                        foreground="#f4f6fa", bordercolor="#343d4d")
-        style.configure("Section.TLabelframe.Label", background="#202633",
-                        foreground="#b8c7ff", font=("Segoe UI Semibold", 10))
-        style.configure("Section.TCheckbutton", background="#202633",
-                        foreground="#e7eaf0")
-        style.map("Section.TCheckbutton",
-                  background=[("active", "#202633")],
-                  foreground=[("disabled", "#778092")])
-        style.configure("Primary.TButton", background="#667cf4", foreground="white",
-                        padding=(12, 9), font=("Segoe UI Semibold", 10))
-        style.map("Primary.TButton", background=[("active", "#7b8eff"),
-                                                ("disabled", "#454c5a")])
-        style.configure("Secondary.TButton", padding=(10, 8))
-        style.configure("Horizontal.TProgressbar", troughcolor="#303746",
-                        background="#7488ff", bordercolor="#303746", lightcolor="#7488ff",
-                        darkcolor="#7488ff")
-        self.configure(background="#171b24")
+        self.configure(background="#101827")
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(2, weight=1)
 
-        header = ttk.Frame(self, padding=(22, 16, 22, 12))
+        header = ttk.Frame(self, padding=(24, 18, 24, 14))
         header.grid(row=0, column=0, sticky="ew")
         header.grid_columnconfigure(0, weight=1)
-        ttk.Label(header, text="Lumina Studio", style="Title.TLabel").grid(
-            row=0, column=0, sticky="w")
-        ttk.Label(header, text="Restaure e aprimore fotos e vídeos",
-                  style="Muted.TLabel").grid(row=1, column=0, sticky="w", pady=(2, 0))
-        self.btn_open = ttk.Button(header, text="＋  Abrir foto ou vídeo",
-                                   command=self.open_dialog, style="Secondary.TButton")
+        self.lbl_title = self._label(header, "app.title", "Title.TLabel")
+        self.lbl_title.grid(row=0, column=0, sticky="w")
+        self.lbl_subtitle = self._label(header, "app.subtitle", "Muted.TLabel")
+        self.lbl_subtitle.grid(row=1, column=0, sticky="w", pady=(3, 0))
+        self.btn_open = self._button(
+            header, "action.open", self.open_dialog, "Secondary.TButton")
         self.btn_open.grid(row=0, column=1, rowspan=2, sticky="e", padx=(12, 0))
+        self.accent_bar = tk.Canvas(
+            header, height=4, highlightthickness=0, bd=0)
+        self.accent_bar.grid(
+            row=2, column=0, columnspan=2, sticky="ew", pady=(14, 0))
+        self.accent_bar.bind("<Configure>", self._draw_accent)
 
-        self.lbl_file = ttk.Label(self, text="Nenhum arquivo selecionado — abra ou arraste uma mídia",
-                                  style="Muted.TLabel", padding=(22, 0, 22, 12))
+        self.lbl_file = self._label(self, "media.none", "Muted.TLabel", padding=(24, 0, 24, 14))
         self.lbl_file.grid(row=1, column=0, sticky="ew")
 
-        main = ttk.Panedwindow(self, orient="horizontal")
-        main.grid(row=2, column=0, sticky="nsew", padx=18, pady=(0, 12))
+        main = ttk.Panedwindow(self, orient="horizontal", style="Main.TPanedwindow")
+        main.grid(row=2, column=0, sticky="nsew", padx=20, pady=(0, 12))
 
-        preview_card = ttk.Frame(main, style="Card.TFrame", padding=16)
+        preview_card = ttk.Frame(main, style="Card.TFrame", padding=18)
         main.add(preview_card, weight=4)
         preview_card.grid_columnconfigure(0, weight=1)
         preview_card.grid_rowconfigure(1, weight=1)
-        ttk.Label(preview_card, text="PRÉVIA", style="Card.TLabel",
-                  font=("Segoe UI Semibold", 10)).grid(row=0, column=0, sticky="w", pady=(0, 10))
+        self.lbl_preview = self._label(
+            preview_card, "preview.title", "Section.TLabel")
+        self.lbl_preview.grid(row=0, column=0, sticky="w", pady=(0, 12))
         stage = ttk.Frame(preview_card, style="Card.TFrame")
         stage.grid(row=1, column=0, sticky="nsew")
         stage.grid_columnconfigure(0, weight=1)
         stage.grid_rowconfigure(0, weight=1)
-        self.view = tk.Canvas(stage, width=PV, height=PV, bg="#10141c",
-                              highlightthickness=1, highlightbackground="#343d4d")
-        self.view.grid(row=0, column=0)
+        self.view = tk.Canvas(
+            stage, width=PV, height=PV, bg="#101827",
+            highlightthickness=1, highlightbackground="#34465A",
+            takefocus=True,
+        )
+        self.view.grid(row=0, column=0, sticky="nsew")
         self._empty_preview = self.view.create_text(
             PV // 2, PV // 2, fill="#9ba6b8",
-            text="Sua prévia aparecerá aqui\n\nAbra uma imagem ou vídeo para começar",
-            justify="center", font=("Segoe UI", 12))
+            text=self.t("preview.empty"), justify="center",
+            font=("Segoe UI", 12), width=PV - 36)
         self.view.bind("<ButtonPress-1>", self._on_split)
         self.view.bind("<B1-Motion>", self._on_split)
         for b in ("<Button-2>", "<Button-3>"):
@@ -131,24 +171,24 @@ class App(BaseTk):
         if DND_FILES:
             self.view.drop_target_register(DND_FILES)
             self.view.dnd_bind("<<Drop>>", lambda e: self.load_path(self.tk.splitlist(e.data)[0]))
-        ttk.Label(preview_card,
-                  text="Arraste a linha vertical para comparar. Clique com o botão direito para escolher uma área.",
-                  style="Card.TLabel", wraplength=650).grid(row=2, column=0, sticky="w", pady=(10, 0))
+        self.lbl_preview_help = self._label(
+            preview_card, "preview.help", "Muted.TLabel", wraplength=660)
+        self.lbl_preview_help.grid(row=2, column=0, sticky="w", pady=(12, 0))
 
-        settings_shell = ttk.Frame(main, style="Card.TFrame", padding=10, width=360)
+        settings_shell = ttk.Frame(main, style="Card.TFrame", padding=12, width=380)
         main.add(settings_shell, weight=2)
         settings_shell.grid_columnconfigure(0, weight=1)
         settings_shell.grid_rowconfigure(0, weight=1)
         settings_shell.grid_rowconfigure(1, weight=0)
-        settings_canvas = tk.Canvas(settings_shell, background="#202633",
-                                    highlightthickness=0, width=330)
+        settings_canvas = tk.Canvas(
+            settings_shell, background="#1B2A3A", highlightthickness=0, width=350)
         self.settings_canvas = settings_canvas
         settings_scroll = ttk.Scrollbar(settings_shell, orient="vertical",
                                         command=settings_canvas.yview)
         settings_canvas.configure(yscrollcommand=settings_scroll.set)
         settings_canvas.grid(row=0, column=0, sticky="nsew")
         settings_scroll.grid(row=0, column=1, sticky="ns")
-        right = ttk.Frame(settings_canvas, style="Card.TFrame", padding=(4, 2, 10, 8))
+        right = ttk.Frame(settings_canvas, style="Card.TFrame", padding=(5, 4, 12, 10))
         settings_window = settings_canvas.create_window((0, 0), window=right, anchor="nw")
         right.bind("<Configure>", lambda e: settings_canvas.configure(
             scrollregion=(0, 0, e.width, e.height)))
@@ -169,90 +209,411 @@ class App(BaseTk):
         self.v_stab = tk.BooleanVar(value=False)
         self.v_interp = tk.BooleanVar(value=False)
 
-        ia = ttk.LabelFrame(right, text="Inteligência artificial", style="Section.TLabelframe",
-                            padding=12)
+        preferences = self._section(right, "preferences.title")
+        preferences.grid(row=0, column=0, sticky="ew", pady=(0, 10))
+        self.lbl_appearance = self._label(preferences, "preferences.appearance", "Card.TLabel")
+        self.lbl_appearance.pack(anchor="w")
+        self.cmb_theme = ttk.Combobox(
+            preferences, state="readonly",
+            values=[self.t(f"theme.{theme}") for theme in THEMES], takefocus=True)
+        self.cmb_theme.current(THEMES.index(self.preferences.theme))
+        self.cmb_theme.pack(fill="x", pady=(4, 2))
+        self._label(
+            preferences, "preferences.appearance_help", "Muted.TLabel",
+            wraplength=300,
+        ).pack(anchor="w", pady=(0, 9))
+        self.lbl_language = self._label(preferences, "preferences.language", "Card.TLabel")
+        self.lbl_language.pack(anchor="w")
+        self.cmb_language = ttk.Combobox(
+            preferences, state="readonly",
+            values=[self.t(f"language.{language}") for language in LANGUAGES],
+            takefocus=True)
+        self.cmb_language.current(LANGUAGES.index(self.preferences.language))
+        self.cmb_language.pack(fill="x", pady=(4, 2))
+        self._label(
+            preferences, "preferences.language_help", "Muted.TLabel",
+            wraplength=300,
+        ).pack(anchor="w")
+        self.cmb_theme.bind("<<ComboboxSelected>>", self._on_theme_selected)
+        self.cmb_language.bind("<<ComboboxSelected>>", self._on_language_selected)
+
+        ia = self._section(right, "section.ai")
         ia.grid(row=0, column=0, sticky="ew", pady=(0, 10))
-        ttk.Checkbutton(ia, text="Restaurar rostos", variable=self.v_face,
-                        command=self._hint, style="Section.TCheckbutton").pack(anchor="w", pady=3)
-        ttk.Checkbutton(ia, text="Upscaling com IA", variable=self.v_ai,
-                        command=self._hint, style="Section.TCheckbutton").pack(anchor="w", pady=3)
-        ttk.Checkbutton(
-            ia, text="Acelerar IA em CPU (pode reduzir detalhes)",
-            variable=self.v_fast_cpu, style="Section.TCheckbutton",
-        ).pack(anchor="w", pady=3)
-        ttk.Label(ia, text="Perfil do modelo", style="Card.TLabel").pack(anchor="w", pady=(8, 2))
+        ia.grid_configure(row=1)
+        self._checkbutton(ia, "option.face", self.v_face, self._hint).pack(anchor="w", pady=3)
+        self._checkbutton(ia, "option.upscale_ai", self.v_ai, self._hint).pack(anchor="w", pady=3)
+        self._checkbutton(ia, "option.fast_cpu", self.v_fast_cpu).pack(anchor="w", pady=3)
+        self._label(ia, "model.label", "Card.TLabel").pack(anchor="w", pady=(8, 2))
         self.cmb_model = ttk.Combobox(
             ia, textvariable=self.v_model, state="readonly",
-            values=["Fotos e vídeos reais", "Anime e desenhos"])
+            values=[self.t("model.photo"), self.t("model.anime")], takefocus=True)
         self.cmb_model.pack(fill="x")
-        self.lbl_ai = ttk.Label(ia, text="Os modelos são baixados na primeira utilização.",
-                                style="Muted.TLabel", wraplength=285)
+        self.cmb_model.current(0)
+        self.lbl_ai = self._label(ia, "model.help", "Muted.TLabel", wraplength=300)
         self.lbl_ai.pack(anchor="w", pady=(7, 0))
 
-        aj = ttk.LabelFrame(right, text="Ajustes de imagem", style="Section.TLabelframe",
-                            padding=12)
-        aj.grid(row=1, column=0, sticky="ew", pady=(0, 10))
-        self._add_scale(aj, "Redução de ruído", self.v_denoise, 0)
-        ttk.Checkbutton(aj, text="Correção automática de cor", variable=self.v_color,
-                        style="Section.TCheckbutton").grid(row=2, column=0, sticky="w", pady=(8, 2))
-        self._add_scale(aj, "Nitidez", self.v_sharp, 3)
+        aj = self._section(right, "section.adjustments")
+        aj.grid(row=2, column=0, sticky="ew", pady=(0, 10))
+        self._add_scale(aj, "option.denoise", self.v_denoise, 0)
+        self._checkbutton(aj, "option.color", self.v_color).grid(
+            row=2, column=0, sticky="w", pady=(8, 2))
+        self._add_scale(aj, "option.sharpness", self.v_sharp, 3)
 
-        out = ttk.LabelFrame(right, text="Resolução e vídeo", style="Section.TLabelframe",
-                             padding=12)
-        out.grid(row=2, column=0, sticky="ew", pady=(0, 10))
-        ttk.Checkbutton(out, text="Ampliar resolução", variable=self.v_up,
-                        command=self._hint, style="Section.TCheckbutton").pack(anchor="w", pady=3)
-        ttk.Label(out, text="Altura de saída", style="Card.TLabel").pack(anchor="w", pady=(7, 2))
+        out = self._section(right, "section.output")
+        out.grid(row=3, column=0, sticky="ew", pady=(0, 10))
+        self._checkbutton(out, "option.upscale", self.v_up, self._hint).pack(anchor="w", pady=3)
+        self._label(out, "output.height", "Card.TLabel").pack(anchor="w", pady=(7, 2))
         self.cmb_target = ttk.Combobox(out, textvariable=self.v_target, state="readonly",
-                                       values=list(TARGETS))
+                                       values=list(TARGETS), takefocus=True)
         self.cmb_target.pack(fill="x")
+        self.cmb_target.current(2)
         ttk.Separator(out).pack(fill="x", pady=8)
-        self.chk_stab = ttk.Checkbutton(out, text="Estabilizar câmera (vídeo)", variable=self.v_stab,
-                                        style="Section.TCheckbutton")
+        self.chk_stab = self._checkbutton(out, "option.stabilize", self.v_stab)
         self.chk_stab.pack(anchor="w", pady=3)
-        self.chk_interp = ttk.Checkbutton(out, text="Interpolar para 60 fps (vídeo)",
-                                          variable=self.v_interp, style="Section.TCheckbutton")
+        self.chk_interp = self._checkbutton(out, "option.interpolate", self.v_interp)
         self.chk_interp.pack(anchor="w", pady=3)
 
-        self.lbl_hint = ttk.Label(right, text="", style="Muted.TLabel",
-                                  wraplength=290, justify="left")
-        self.lbl_hint.grid(row=3, column=0, sticky="w", pady=(0, 8))
+        self.lbl_hint = ttk.Label(
+            right, text="", style="Muted.TLabel", wraplength=300, justify="left")
+        self.lbl_hint.grid(row=4, column=0, sticky="w", pady=(0, 8))
 
         actions = ttk.Frame(settings_shell, style="Card.TFrame", padding=(4, 10, 4, 2))
         actions.grid(row=1, column=0, columnspan=2, sticky="ew")
         actions.grid_columnconfigure(0, weight=1)
         ttk.Separator(actions).grid(row=0, column=0, sticky="ew", pady=(0, 8))
-        self.btn_prev = ttk.Button(actions, text="Atualizar prévia",
-                                   command=self.preview, style="Secondary.TButton")
+        self.btn_prev = self._button(
+            actions, "action.refresh_preview", self.preview, "Secondary.TButton")
         self.btn_prev.grid(row=1, column=0, sticky="ew", pady=3)
-        self.btn_go = ttk.Button(actions, text="Processar e salvar",
-                                 command=self.start, style="Primary.TButton")
+        self.btn_go = self._button(
+            actions, "action.process", self.start, "Primary.TButton")
         self.btn_go.grid(row=2, column=0, sticky="ew", pady=3)
-        self.btn_cancel = ttk.Button(actions, text="Cancelar processamento",
-                                      command=self.cancel.set, state="disabled")
+        self.btn_cancel = self._button(
+            actions, "action.cancel", self.cancel.set, "Secondary.TButton", state="disabled")
         self.btn_cancel.grid(row=3, column=0, sticky="ew", pady=(3, 2))
         self.btn_cancel.grid_remove()
 
-        footer = ttk.Frame(self, padding=(22, 8, 22, 14))
+        footer = ttk.Frame(self, padding=(24, 8, 24, 16))
         footer.grid(row=3, column=0, sticky="ew")
         footer.grid_columnconfigure(0, weight=1)
-        self.status = ttk.Label(footer, text="Pronto para começar", style="Muted.TLabel")
+        self.status = ttk.Label(footer, style="Status.TLabel")
         self.status.grid(row=0, column=0, sticky="w", pady=(0, 6))
         self.pb = ttk.Progressbar(footer, maximum=100, mode="determinate")
         self.pb.grid(row=1, column=0, sticky="ew")
-        self.status_detail = ttk.Label(footer, text="", style="Muted.TLabel")
+        self.status_detail = ttk.Label(footer, style="RootMuted.TLabel", wraplength=1100)
         self.status_detail.grid(row=2, column=0, sticky="w", pady=(4, 0))
+        self._set_status("status.ready")
+        self._set_detail("status.ready_detail")
+        self._apply_theme(self.theme)
         self._hint()
 
-    def _add_scale(self, parent, label, variable, row):
+    def _label(self, parent, key, style, **options):
+        widget = ttk.Label(parent, style=style, **options)
+        self._localized_widgets.append((widget, key, "text"))
+        widget.configure(text=self.t(key))
+        return widget
+
+    def _button(self, parent, key, command, style, **options):
+        widget = ttk.Button(parent, command=command, style=style, **options)
+        self._localized_widgets.append((widget, key, "text"))
+        widget.configure(text=self.t(key))
+        return widget
+
+    def _section(self, parent, key):
+        widget = ttk.LabelFrame(
+            parent, style="Section.TLabelframe", padding=12, takefocus=False)
+        self._localized_widgets.append((widget, key, "text"))
+        widget.configure(text=self.t(key))
+        return widget
+
+    def _checkbutton(self, parent, key, variable, command=None):
+        widget = ttk.Checkbutton(
+            parent, variable=variable, command=command,
+            style="Section.TCheckbutton", takefocus=True)
+        self._localized_widgets.append((widget, key, "text"))
+        widget.configure(text=self.t(key))
+        return widget
+
+    def _add_scale(self, parent, label_key, variable, row):
         parent.grid_columnconfigure(0, weight=1)
-        ttk.Label(parent, text=label, style="Card.TLabel").grid(
-            row=row, column=0, sticky="w")
+        label = self._label(parent, label_key, "Card.TLabel")
+        label.grid(row=row, column=0, sticky="w")
         value = ttk.Label(parent, text=f"{int(variable.get())}%", style="Card.TLabel")
+        if label_key == "option.denoise":
+            self.denoise_value = value
+        else:
+            self.sharpness_value = value
         value.grid(row=row, column=1, sticky="e")
-        ttk.Scale(parent, from_=0, to=100, variable=variable).grid(
+        ttk.Scale(parent, from_=0, to=100, variable=variable, takefocus=True).grid(
             row=row + 1, column=0, columnspan=2, sticky="ew", pady=(2, 0))
-        variable.trace_add("write", lambda *_: value.config(text=f"{int(variable.get())}%"))
+        variable.trace_add(
+            "write", lambda *_: value.config(text=f"{int(variable.get())}%"))
+
+    def t(self, key, **values):
+        return self.translator(key, **values)
+
+    def _apply_theme(self, theme):
+        self.theme = theme
+        palettes = {
+            "dark": {
+                "background": "#101827", "surface": "#1B2A3A",
+                "surface_raised": "#223449", "border": "#344A60",
+                "text": "#F5F4F0", "muted": "#AAB6C4",
+                "blue": "#527FA8", "orange": "#B85D2A",
+                "amber": "#D98236", "gold": "#D9AD48",
+                "preview": "#101827", "disabled": "#718093",
+            },
+            "light": {
+                "background": "#F0E8D8", "surface": "#F5F4F0",
+                "surface_raised": "#FFFFFF", "border": "#C6D1DB",
+                "text": "#18283A", "muted": "#526274",
+                "blue": "#426D96", "orange": "#A94D20",
+                "amber": "#B85D2A", "gold": "#8B6A14",
+                "preview": "#E3E8ED", "disabled": "#7C8792",
+            },
+        }
+        self.colors = palettes[theme]
+        c = self.colors
+        style = ttk.Style(self)
+        style.configure(".", font=("Segoe UI", 10), foreground=c["text"])
+        style.configure("TFrame", background=c["background"])
+        style.configure("Card.TFrame", background=c["surface"])
+        style.configure("TLabel", background=c["background"], foreground=c["text"])
+        style.configure("Card.TLabel", background=c["surface"], foreground=c["text"])
+        style.configure("Muted.TLabel", background=c["surface"], foreground=c["muted"])
+        style.configure(
+            "RootMuted.TLabel", background=c["background"], foreground=c["muted"])
+        style.configure(
+            "Status.TLabel", background=c["background"], foreground=c["text"],
+            font=("Segoe UI Semibold", 10))
+        style.configure(
+            "Title.TLabel", background=c["background"], foreground=c["text"],
+            font=("Segoe UI Semibold", 22))
+        style.configure(
+            "Section.TLabel", background=c["surface"], foreground=c["gold"],
+            font=("Segoe UI Semibold", 10))
+        style.configure(
+            "Section.TLabelframe", background=c["surface"], foreground=c["text"],
+            bordercolor=c["border"], lightcolor=c["border"], darkcolor=c["border"],
+            relief="solid", borderwidth=1)
+        style.configure(
+            "Section.TLabelframe.Label", background=c["surface"], foreground=c["blue"],
+            font=("Segoe UI Semibold", 10))
+        style.configure(
+            "Section.TCheckbutton", background=c["surface"], foreground=c["text"],
+            padding=(2, 4), focuscolor=c["gold"])
+        style.map(
+            "Section.TCheckbutton",
+            background=[("active", c["surface_raised"])],
+            foreground=[("disabled", c["disabled"])])
+        style.configure(
+            "Primary.TButton", background=c["orange"], foreground="#FFFFFF",
+            padding=(14, 10), bordercolor=c["orange"],
+            font=("Segoe UI Semibold", 10), focuscolor=c["gold"])
+        style.map(
+            "Primary.TButton",
+            background=[("active", c["amber"]), ("pressed", c["amber"]),
+                        ("disabled", c["disabled"])],
+            foreground=[("disabled", "#FFFFFF")])
+        style.configure(
+            "Secondary.TButton", background=c["surface_raised"], foreground=c["text"],
+            padding=(11, 8), bordercolor=c["border"], focuscolor=c["gold"])
+        style.map(
+            "Secondary.TButton",
+            background=[("active", c["blue"]), ("pressed", c["blue"]),
+                        ("disabled", c["surface"])],
+            foreground=[("active", "#FFFFFF"), ("disabled", c["disabled"])])
+        style.configure(
+            "TCombobox", fieldbackground=c["surface_raised"], background=c["surface_raised"],
+            foreground=c["text"], arrowcolor=c["blue"], bordercolor=c["border"],
+            lightcolor=c["border"], darkcolor=c["border"], padding=5,
+            focuscolor=c["gold"])
+        style.map(
+            "TCombobox",
+            fieldbackground=[("readonly", c["surface_raised"])],
+            foreground=[("readonly", c["text"])],
+            selectbackground=[("readonly", c["blue"])],
+            selectforeground=[("readonly", "#FFFFFF")])
+        style.configure(
+            "TScale", background=c["surface"], troughcolor=c["border"],
+            sliderthickness=14, focuscolor=c["gold"])
+        style.configure(
+            "TScrollbar", background=c["surface_raised"], troughcolor=c["surface"],
+            arrowcolor=c["muted"], bordercolor=c["surface"], lightcolor=c["surface"],
+            darkcolor=c["surface"])
+        style.configure(
+            "Horizontal.TProgressbar", troughcolor=c["border"], background=c["amber"],
+            bordercolor=c["border"], lightcolor=c["amber"], darkcolor=c["amber"])
+        style.configure("TSeparator", background=c["border"])
+        style.configure("Main.TPanedwindow", background=c["background"])
+        self.configure(background=c["background"])
+        if hasattr(self, "accent_bar"):
+            self.accent_bar.configure(background=c["background"])
+            self._draw_accent()
+        if hasattr(self, "view"):
+            self.view.configure(
+                background=c["preview"], highlightbackground=c["border"])
+            self.view.itemconfigure(self._empty_preview, fill=c["muted"])
+        if hasattr(self, "settings_canvas"):
+            self.settings_canvas.configure(background=c["surface"])
+        self._refresh_locale_widgets()
+
+    def _draw_accent(self, _event=None):
+        if not hasattr(self, "accent_bar") or not hasattr(self, "colors"):
+            return
+        width = self.accent_bar.winfo_width()
+        if width < 2:
+            return
+        start = tuple(int(self.colors["blue"][index:index + 2], 16)
+                      for index in (1, 3, 5))
+        middle = tuple(int(self.colors["orange"][index:index + 2], 16)
+                       for index in (1, 3, 5))
+        end = tuple(int(self.colors["gold"][index:index + 2], 16)
+                    for index in (1, 3, 5))
+        self.accent_bar.delete("gradient")
+        segments = min(width, 240)
+        for position in range(segments):
+            ratio = position / max(segments - 1, 1)
+            left, right, progress = (
+                (start, middle, ratio * 2)
+                if ratio <= 0.5 else (middle, end, (ratio - 0.5) * 2)
+            )
+            color = "#" + "".join(
+                f"{round(a + (b - a) * progress):02x}"
+                for a, b in zip(left, right)
+            )
+            x0 = position * width / segments
+            x1 = (position + 1) * width / segments
+            self.accent_bar.create_rectangle(
+                x0, 0, x1 + 1, 4, fill=color, outline=color, tags="gradient")
+
+    def _refresh_locale_widgets(self):
+        for widget, key, option in self._localized_widgets:
+            widget.configure(**{option: self.t(key)})
+        self.title(self.t("app.title"))
+        if hasattr(self, "cmb_theme"):
+            theme_index = self.cmb_theme.current()
+            language_index = self.cmb_language.current()
+            model_index = self.cmb_model.current()
+            self.cmb_theme.configure(
+                values=[self.t(f"theme.{theme}") for theme in THEMES])
+            self.cmb_language.configure(
+                values=[self.t(f"language.{language}") for language in LANGUAGES])
+            self.cmb_model.configure(
+                values=[self.t("model.photo"), self.t("model.anime")])
+            if theme_index >= 0:
+                self.cmb_theme.current(theme_index)
+            if language_index >= 0:
+                self.cmb_language.current(language_index)
+            if model_index >= 0:
+                self.cmb_model.current(model_index)
+        if getattr(self, "src", None) and self.first is not None:
+            height, width = self.first.shape[:2]
+            self.lbl_file.configure(text=self.t(
+                "media.detail", name=os.path.basename(self.src),
+                width=width, height=height,
+                kind=self.t("media.kind.video" if self.kind == "video"
+                            else "media.kind.image")))
+        elif hasattr(self, "lbl_file"):
+            self.lbl_file.configure(text=self.t("media.none"))
+        self._refresh_scale_values()
+        if self._status_state:
+            key, values, text = self._status_state
+            self.status.configure(text=self.t(key, **values) if key else text)
+        if self._detail_state:
+            key, values, text = self._detail_state
+            self.status_detail.configure(text=self.t(key, **values) if key else text)
+        if hasattr(self, "v_face"):
+            self._hint()
+
+    def _refresh_scale_values(self):
+        if not hasattr(self, "v_denoise"):
+            return
+        for variable, label in (
+            (self.v_denoise, "denoise_value"),
+            (self.v_sharp, "sharpness_value"),
+        ):
+            value_widget = getattr(self, label, None)
+            if value_widget is not None:
+                value_widget.configure(text=f"{int(variable.get())}%")
+
+    def _set_status(self, key=None, text=None, **values):
+        self._status_state = (key, values, text)
+        self.status.configure(text=self.t(key, **values) if key else text)
+
+    def _set_detail(self, key=None, text=None, **values):
+        self._detail_state = (key, values, text)
+        self.status_detail.configure(text=self.t(key, **values) if key else text)
+
+    def _on_theme_selected(self, _event=None):
+        theme = THEMES[self.cmb_theme.current()]
+        self.preferences = replace(self.preferences, theme=theme)
+        self._apply_theme(resolve_theme(
+            theme, system_theme() if theme == "auto" else "light"))
+        self._save_preferences()
+        if self._auto_theme_job is not None:
+            self.after_cancel(self._auto_theme_job)
+            self._auto_theme_job = None
+        self._schedule_auto_theme_check()
+
+    def _on_language_selected(self, _event=None):
+        language = LANGUAGES[self.cmb_language.current()]
+        self.preferences = replace(self.preferences, language=language)
+        self.translator.set_language(language)
+        self._refresh_locale_widgets()
+        self._save_preferences()
+
+    def _save_preferences(self):
+        try:
+            save_preferences(self.preferences)
+        except OSError as error:
+            messagebox.showerror(
+                self.t("dialog.error_title"),
+                self.t("dialog.preferences_error", error=error),
+                parent=self,
+            )
+
+    def _schedule_auto_theme_check(self):
+        self._auto_theme_job = None
+        if self.preferences.theme != "auto":
+            return
+        current_theme = resolve_theme("auto", system_theme())
+        if current_theme != self.theme:
+            self._apply_theme(current_theme)
+        self._auto_theme_job = self.after(5000, self._schedule_auto_theme_check)
+
+    def _on_close(self):
+        if self.busy:
+            if not messagebox.askyesno(
+                self.t("dialog.error_title"),
+                self.t("dialog.close_busy"),
+                parent=self,
+            ):
+                return
+            self._close_when_idle = True
+            self.cancel.set()
+            self._set_status("status.closing_when_idle")
+            self._set_detail("status.closing_detail")
+            return
+        self._destroy_app()
+
+    def _destroy_app(self):
+        if self._auto_theme_job is not None:
+            self.after_cancel(self._auto_theme_job)
+        self.destroy()
+
+    def _localize_engine_error(self, error):
+        engine_errors = {
+            "Não foi possível ler a imagem.": "engine.error_read_image",
+            "Falha ao codificar a imagem.": "engine.error_encode_image",
+            "Não foi possível criar o arquivo de vídeo.": "engine.error_create_video",
+            "Não foi possível abrir o vídeo.": "engine.error_open_video",
+            "O FFmpeg encerrou inesperadamente.": "engine.error_ffmpeg",
+            "Formato não suportado. Use MP4, MOV, MKV, WEBM, JPG, PNG, WEBP etc.": (
+                "engine.error_unsupported"),
+        }
+        message = str(error)
+        key = engine_errors.get(message)
+        return self.t(key) if key else message
 
     def _settings_wheel(self, event):
         widget = event.widget
@@ -264,11 +625,12 @@ class App(BaseTk):
 
     def _hint(self):
         msgs = []
+        if self.src is None:
+            msgs.append(self.t("hint.no_file"))
         if self.kind == "video" and (self.v_ai.get() or self.v_face.get()):
-            msgs.append("Vídeo com IA é muito lento sem placa NVIDIA (CUDA). "
-                        "Para testar rápido, desative a IA.")
+            msgs.append(self.t("hint.video_ai"))
         if not DND_FILES:
-            msgs.append("Para abrir um arquivo, use o botão Abrir foto ou vídeo.")
+            msgs.append(self.t("hint.no_drag_drop"))
         self.lbl_hint.config(text=" ".join(msgs))
         self.chk_stab.config(state="normal" if self.kind == "video" else "disabled")
         self.chk_interp.config(state="normal" if self.kind == "video" else "disabled")
@@ -276,9 +638,7 @@ class App(BaseTk):
             state="readonly" if self.v_ai.get() and self.v_up.get() else "disabled")
         self.cmb_target.config(state="readonly" if self.v_up.get() else "disabled")
         if self.kind:
-            self.lbl_ai.config(
-                text="Os modelos selecionados são baixados na primeira utilização. "
-                     "Sem internet, os ajustes clássicos continuam disponíveis.")
+            self.lbl_ai.config(text=self.t("model.help"))
 
     def _on_view_resize(self, event):
         if self.prev is None:
@@ -294,7 +654,7 @@ class App(BaseTk):
             face=self.v_face.get(),
             upscale=self.v_up.get(),
             use_ai=self.v_ai.get(),
-            anime=self.v_model.get().startswith("Anime"),
+            anime=self.cmb_model.current() == 1,
             fast_cpu=self.v_fast_cpu.get(),
             target_h=TARGETS[self.v_target.get()],
             sharpen=int(self.v_sharp.get()),
@@ -325,16 +685,40 @@ class App(BaseTk):
     # ----------------------------------------------------------- arquivo
     def open_dialog(self):
         exts = " ".join("*" + e for e in sorted(VIDEO_EXT | IMAGE_EXT))
-        path = filedialog.askopenfilename(filetypes=[("Foto ou vídeo", exts), ("Todos", "*.*")])
+        path = filedialog.askopenfilename(
+            parent=self,
+            title=self.t("dialog.open_file_title"),
+            filetypes=[
+                (self.t("dialog.image_filter") + " / " + self.t("dialog.video_filter"), exts),
+                (self.t("dialog.all_files"), "*.*"),
+            ],
+        )
         if path:
             self.load_path(path)
 
     def load_path(self, path):
+        if self.busy:
+            return
+        self._load_generation += 1
+        generation = self._load_generation
+        self._busy(True)
+        self._set_status("status.loading_media")
+        self._set_detail("status.loading_media_detail")
+        threading.Thread(
+            target=self._load_path_job,
+            args=(path, generation),
+            daemon=True,
+        ).start()
+
+    def _load_path_job(self, path, generation):
         try:
             frame, kind = engine.read_first_frame(path)
-        except Exception as e:
-            messagebox.showerror("Arquivo inválido", str(e))
+        except Exception as error:
+            self.q.put(("load_error", (generation, error)))
             return
+        self.q.put(("loaded", (generation, path, frame, kind)))
+
+    def _set_loaded_media(self, path, frame, kind):
         self.src, self.kind, self.first = path, kind, frame
         self.btn_prev.config(state="normal")
         self.btn_go.config(state="normal")
@@ -342,14 +726,16 @@ class App(BaseTk):
         self.prev = None
         self.box = None
         h, w = frame.shape[:2]
-        self.lbl_file.config(text=f"{os.path.basename(path)} — {w}×{h} — "
-                                  f"{'vídeo' if kind == 'video' else 'imagem'}")
+        self.lbl_file.config(text=self.t(
+            "media.detail", name=os.path.basename(path), width=w, height=h,
+            kind=self.t("media.kind.video" if kind == "video" else "media.kind.image"),
+        ))
         self._hint()
         self.view.delete("all")
         self.view.create_text(self.view.winfo_width() // 2, self.view.winfo_height() // 2,
-                              fill="#9ba6b8",
-                              text="Preparando prévia…", justify="center",
-                              font=("Segoe UI", 12))
+                              fill=self.colors["muted"],
+                              text=self.t("status.preview"), justify="center",
+                              font=("Segoe UI", 12), width=PV - 36)
         self.preview()
 
     # ----------------------------------------------------------- prévia
@@ -361,8 +747,8 @@ class App(BaseTk):
         preview_id = self.preview_id
         frame = self.first.copy()
         center = self.center
-        self.status.config(text="Gerando prévia…")
-        self.status_detail.config(text="A prévia básica é rápida; a IA pode levar mais tempo.")
+        self._set_status("status.preview")
+        self._set_detail("status.preview_detail")
         self._busy(True)
         threading.Thread(
             target=self._preview_job,
@@ -371,26 +757,26 @@ class App(BaseTk):
         ).start()
 
     def _preview_job(self, s, preview_id, frame, center):
-        succeeded = False
         try:
             before, after, box = engine.make_preview(frame, s, None, center, PV)
             self.q.put(("preview", (preview_id, before, after, box)))
-            succeeded = True
         except Exception as e:
             traceback.print_exc()
             self.q.put(("err", str(e)))
-        finally:
             self.q.put(("idle", None))
-        if succeeded and (s.face or (s.use_ai and s.upscale)):
+            return
+        if s.face or (s.use_ai and s.upscale):
             threading.Thread(
                 target=self._ai_preview_job,
                 args=(s, preview_id, frame, center),
                 daemon=True,
             ).start()
+        else:
+            self.q.put(("idle", None))
 
     def _ai_preview_job(self, s, preview_id, frame, center):
         try:
-            self.q.put(("log", "Prévia básica pronta; carregando modelos de IA…"))
+            self.q.put(("log_key", ("status.preview_basic_ready", {})))
             ai = self._get_ai(s)
             if ai and ((s.face and ai.can_face)
                        or (s.use_ai and s.upscale and ai.can_upscale)):
@@ -398,9 +784,12 @@ class App(BaseTk):
                 self.q.put(("preview", (preview_id, before, after, box)))
         except Exception as e:
             traceback.print_exc()
-            self.q.put(("log", f"Prévia básica mantida; falha ao aplicar IA: {e}"))
+            self.q.put(("log_key", ("status.preview_ai_failed", {
+                "error": self._localize_engine_error(e),
+            })))
         finally:
             self.q.put(("stage_done", None))
+            self.q.put(("idle", None))
 
     def _on_split(self, e):
         if not self._display_rect:
@@ -449,25 +838,29 @@ class App(BaseTk):
         if self.busy:
             return
         if self.src is None:
-            messagebox.showinfo("Lumina Studio", "Abra um arquivo primeiro.")
+            messagebox.showinfo(
+                self.t("dialog.error_title"), self.t("dialog.open_first"), parent=self)
             return
         s = self.settings()
         base, ext = os.path.splitext(os.path.basename(self.src))
         if self.kind == "video":
-            dst = filedialog.asksaveasfilename(initialfile=f"{base}_lumina.mp4",
-                                               defaultextension=".mp4",
-                                               filetypes=[("MP4", "*.mp4")])
+            dst = filedialog.asksaveasfilename(
+                parent=self, title=self.t("dialog.save_video_title"),
+                initialfile=f"{base}_lumina.mp4", defaultextension=".mp4",
+                filetypes=[(self.t("dialog.video_filter"), "*.mp4")])
         else:
             ext = ext.lower() if ext.lower() in IMAGE_EXT else ".png"
-            dst = filedialog.asksaveasfilename(initialfile=f"{base}_lumina{ext}",
-                                               defaultextension=ext,
-                                               filetypes=[("Imagem", "*" + ext)])
+            dst = filedialog.asksaveasfilename(
+                parent=self, title=self.t("dialog.save_image_title"),
+                initialfile=f"{base}_lumina{ext}", defaultextension=ext,
+                filetypes=[(self.t("dialog.image_filter"), "*" + ext)])
         if not dst:
             return
         if os.path.normcase(os.path.abspath(dst)) == os.path.normcase(os.path.abspath(self.src)):
             messagebox.showerror(
-                "Destino inválido",
-                "Escolha um arquivo de saída diferente do arquivo original.",
+                self.t("dialog.invalid_destination_title"),
+                self.t("dialog.invalid_destination"),
+                parent=self,
             )
             return
         self.cancel.clear()
@@ -477,13 +870,12 @@ class App(BaseTk):
     def _job(self, s, dst):
         try:
             if self.kind == "image" and (s.face or (s.use_ai and s.upscale)):
-                self.q.put(("stage", "Salvando imagem editada…"))
+                self.q.put(("stage", ("status.image_saved", {})))
                 engine.process_image(self.src, dst, s, None)
-                self.q.put(("log", "Imagem salva; carregando IA para aprimoramento…"))
                 ai = self._get_ai(s)
                 if ai and ((s.face and ai.can_face)
                            or (s.use_ai and s.upscale and ai.can_upscale)):
-                    self.q.put(("stage", "Aplicando aprimoramento de IA…"))
+                    self.q.put(("stage", ("status.ai_enhancement", {})))
                     folder = os.path.dirname(os.path.abspath(dst))
                     ext = os.path.splitext(dst)[1]
                     fd, ai_dst = tempfile.mkstemp(prefix=".lumina_ai_", suffix=ext, dir=folder)
@@ -496,25 +888,31 @@ class App(BaseTk):
                         )
                         os.replace(ai_dst, dst)
                     except Exception as e:
-                        if os.path.exists(ai_dst):
+                        try:
                             os.remove(ai_dst)
+                        except FileNotFoundError:
+                            pass
                         traceback.print_exc()
-                        self.q.put(("log", f"IA falhou; imagem editada mantida. Erro: {e}"))
+                        self.q.put(("log_key", ("status.ai_fallback", {
+                            "error": self._localize_engine_error(e),
+                        })))
             elif self.kind == "image":
-                self.q.put(("stage", "Processando e salvando imagem…"))
+                self.q.put(("stage", ("status.processing_image", {})))
                 engine.process_image(self.src, dst, s, None)
             else:
-                self.q.put(("stage", "Carregando modelos de IA…"
-                            if s.face or (s.use_ai and s.upscale) else "Preparando vídeo…"))
+                stage_key = ("status.loading_models"
+                             if s.face or (s.use_ai and s.upscale)
+                             else "status.preparing_video")
+                self.q.put(("stage", (stage_key, {})))
                 ai = self._get_ai(s)
-                self.q.put(("stage", "Processando vídeo…"))
+                self.q.put(("stage", ("status.processing_video", {})))
                 engine.process_video(self.src, dst, s, ai,
                                      progress=lambda p: self.q.put(("prog", p)),
                                      cancel=self.cancel)
             self.q.put(("done", (dst, self.cancel.is_set())))
         except Exception as e:
             traceback.print_exc()
-            self.q.put(("err", str(e)))
+            self.q.put(("err", self._localize_engine_error(e)))
         finally:
             self.q.put(("idle", None))
 
@@ -527,24 +925,38 @@ class App(BaseTk):
         with self.ai_lock:
             if self.ai_key != ai_key:
                 self.ai = None
-                self.ai_key = ai_key
-                self.q.put(("stage", "Preparando modelos de IA…"))
+                self.q.put(("stage", ("status.preparing_ai", {})))
                 try:
                     self.ai = engine.load_ai(
                         s.anime,
-                        log=lambda m: self.q.put(("log", m)),
+                        log=lambda _message: self.q.put(
+                            ("log_key", ("status.downloading_models", {}))),
                         progress=lambda name, done, total: self.q.put(
                             ("download", (name, done, total))),
                         load_upscaler=load_upscaler,
                         load_face=load_face,
                     )
                 except Exception as e:
-                    self.q.put(("log", f"IA indisponível; usando processamento clássico. Erro: {e}"))
+                    self.ai_key = None
+                    self.q.put(("log_key", ("status.ai_unavailable", {
+                        "error": self._localize_engine_error(e),
+                    })))
                     return None
-                summary = self.ai.summary()
-                self.q.put(("log", summary))
+                self.ai_key = ai_key
+                self.q.put(("log_key", ("status.ai_summary", {
+                    "device": self.t("status.device.gpu" if self.ai.device == "cuda"
+                                     else "status.device.cpu"),
+                    "upscaling": self.t("status.feature.available"
+                                        if self.ai.can_upscale
+                                        else "status.feature.unavailable"),
+                    "faces": self.t("status.feature.available"
+                                    if self.ai.can_face
+                                    else "status.feature.unavailable"),
+                })))
                 if not self.ai.can_upscale and not self.ai.can_face:
-                    self.q.put(("log", f"{summary} — usando processamento clássico."))
+                    self.q.put(("log_key", ("status.classic_fallback", {})))
+                for warning in self.ai.errors:
+                    self.q.put(("log_key", ("status.ai_warning", {"error": warning})))
         return self.ai
 
     # ----------------------------------------------------------- fila da interface
@@ -553,11 +965,16 @@ class App(BaseTk):
             while True:
                 kind, val = self.q.get_nowait()
                 if kind == "log":
-                    self.status.config(text=val)
-                    self.status_detail.config(text="")
+                    self._set_status(text=val)
+                    self._set_detail(text="")
+                elif kind == "log_key":
+                    key, values = val
+                    self._set_status(key, **values)
+                    self._set_detail(text="")
                 elif kind == "stage":
-                    self.status.config(text=val)
-                    self.status_detail.config(text="O aplicativo está trabalhando; você pode acompanhar o progresso acima.")
+                    key, values = val
+                    self._set_status(key, **values)
+                    self._set_detail("status.stage_detail")
                     self.pb.stop()
                     self.pb.configure(mode="indeterminate")
                     self.pb.start(12)
@@ -566,7 +983,7 @@ class App(BaseTk):
                         self.pb.stop()
                         self.pb.configure(mode="determinate")
                         self.pb["value"] = 0
-                        self.status_detail.config(text="")
+                        self._set_detail(text="")
                 elif kind == "download":
                     name, done, total = val
                     if total > 0:
@@ -574,62 +991,124 @@ class App(BaseTk):
                         self.pb.configure(mode="determinate")
                         self.pb["value"] = min(done / total * 100, 100)
                         percent = min(done / total * 100, 100)
-                        self.status.config(text=f"Baixando modelo: {name}")
-                        self.status_detail.config(
-                            text=f"{percent:.0f}%  ·  {self._format_bytes(done)} de {self._format_bytes(total)}")
+                        self._set_status("status.download", name=name)
+                        self._set_detail(
+                            "status.download_detail", percent=f"{percent:.0f}",
+                            done=self._format_bytes(done), total=self._format_bytes(total))
                     else:
                         self.pb.configure(mode="indeterminate")
                         self.pb.start(12)
-                        self.status.config(text=f"Baixando modelo: {name}")
-                        self.status_detail.config(text=f"{self._format_bytes(done)} recebidos")
+                        self._set_status("status.download", name=name)
+                        self._set_detail(
+                            "status.received", size=self._format_bytes(done))
                 elif kind == "prog":
                     self.pb.stop()
                     self.pb.configure(mode="determinate")
                     self.pb["value"] = val * 100
-                    self.status.config(text=f"Processando vídeo… {val * 100:.0f}%")
-                    self.status_detail.config(text="Não feche o aplicativo até o processamento terminar.")
+                    self._set_status("status.video_progress", percent=f"{val * 100:.0f}")
+                    self._set_detail("status.video_detail")
                 elif kind == "image_prog":
                     progress, stage = val
                     self.pb.stop()
                     self.pb.configure(mode="determinate")
                     self.pb["value"] = progress * 100
-                    self.status.config(text=f"{stage}… {progress * 100:.0f}%")
-                    self.status_detail.config(
-                        text="Acompanhe o andamento do aprimoramento na barra abaixo.")
+                    self._set_status(
+                        "status.image_progress", stage=self._translate_stage(stage),
+                        percent=f"{progress * 100:.0f}")
+                    self._set_detail("status.image_detail")
                 elif kind == "preview":
                     preview_id, before, after, box = val
                     if preview_id == self.preview_id:
                         self.prev = (before, after)
                         self.box = box
                         self._compose()
-                        self.status.config(text="Prévia atualizada")
+                        self._set_status("status.preview_updated")
+                elif kind == "loaded":
+                    generation, path, frame, media_kind = val
+                    if generation == self._load_generation:
+                        self._busy(False)
+                        if self._close_when_idle:
+                            self._destroy_app()
+                            return
+                        self._set_loaded_media(path, frame, media_kind)
+                elif kind == "load_error":
+                    generation, error = val
+                    if generation == self._load_generation:
+                        self._busy(False)
+                        self._set_status("status.processing_error")
+                        self._set_detail("status.processing_error_detail")
+                        messagebox.showerror(
+                            self.t("dialog.invalid_file_title"),
+                            self._localize_engine_error(error),
+                            parent=self,
+                        )
+                        if self._close_when_idle:
+                            self._destroy_app()
+                            return
                 elif kind == "done":
                     dst, cancelled = val
-                    msg = ("Interrompido. A parte já processada foi salva em:"
-                           if cancelled else "Concluído! Arquivo salvo em:")
-                    self.status.config(text="Pronto")
-                    self.status_detail.config(text=f"Arquivo salvo em: {dst}")
+                    self._set_status(
+                        "status.processing_cancelled" if cancelled
+                        else "status.processing_complete")
+                    self._set_detail(
+                        "status.partial_saved_to" if cancelled else "status.saved_to",
+                        path=dst)
                     self._busy(False)
-                    messagebox.showinfo("Lumina Studio", f"{msg}\n{dst}")
+                    messagebox.showinfo(
+                        self.t("dialog.error_title"),
+                        self.t("dialog.processing_cancelled" if cancelled
+                               else "dialog.processing_complete", path=dst),
+                        parent=self,
+                    )
                 elif kind == "err":
-                    self.status.config(text="Não foi possível concluir")
-                    self.status_detail.config(text="Confira a mensagem de erro para saber como continuar.")
+                    self._set_status("status.processing_error")
+                    self._set_detail("status.processing_error_detail")
                     self._busy(False)
-                    messagebox.showerror("Lumina Studio", val)
+                    messagebox.showerror(
+                        self.t("dialog.error_title"), val, parent=self)
                 elif kind == "idle":
                     self._busy(False)
+                    if self._close_when_idle:
+                        self._destroy_app()
+                        return
         except queue.Empty:
             pass
         self.after(80, self._poll)
 
-    @staticmethod
-    def _format_bytes(value):
-        size = float(value)
-        for unit in ("B", "KB", "MB", "GB"):
-            if size < 1024 or unit == "GB":
-                return f"{size:.1f} {unit}"
-            size /= 1024
+    def _translate_stage(self, stage):
+        stage_keys = {
+            "Preparando imagem": "stage.prepare_image",
+            "Restaurando rostos": "stage.restore_faces",
+            "Rostos restaurados": "stage.faces_restored",
+            "Aplicando upscaling com IA": "stage.upscale",
+            "Finalizando resolução": "stage.finalize_resolution",
+            "Aplicando nitidez": "stage.sharpen",
+            "Salvando resultado": "stage.save_result",
+            "Aprimoramento concluído": "stage.complete",
+        }
+        key = stage_keys.get(stage)
+        return self.t(key) if key else stage
+
+    def _format_bytes(self, value):
+        return format_bytes(value, self.preferences.language)
+
+
+def main():
+    try:
+        app = App()
+    except (OSError, RuntimeError, ValueError, KeyError) as error:
+        root = tk.Tk()
+        root.withdraw()
+        messagebox.showerror(
+            "Lumina AI Studio",
+            "Falha ao carregar os recursos ou preferências do aplicativo.\n\n"
+            f"{error}",
+            parent=root,
+        )
+        root.destroy()
+        raise
+    app.mainloop()
 
 
 if __name__ == "__main__":
-    App().mainloop()
+    main()
