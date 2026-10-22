@@ -1,4 +1,6 @@
+import sys
 import tempfile
+import types
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -26,6 +28,34 @@ class FakeResponse:
 
 
 class ModelDownloadTests(unittest.TestCase):
+    def test_face_helper_weights_use_the_persistent_model_directory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            arguments = {}
+            gfpgan_module = types.ModuleType("gfpgan")
+
+            def fake_gfpganer(**kwargs):
+                arguments.update(kwargs)
+                return object()
+
+            gfpgan_module.GFPGANer = fake_gfpganer
+            engine = ai.AIEngine.__new__(ai.AIEngine)
+            engine.can_face = False
+            engine.device = "cpu"
+            engine.log = lambda _message: None
+            engine.progress = None
+
+            with (
+                patch.object(ai, "MODELS", directory),
+                patch.object(ai, "_patch_torchvision"),
+                patch.object(ai, "_weight", return_value="face-model.pth"),
+                patch.dict(sys.modules, {"gfpgan": gfpgan_module}),
+            ):
+                engine._load_face()
+
+            self.assertEqual(
+                Path(arguments["model_rootpath"]), Path(directory) / "gfpgan")
+            self.assertTrue(engine.can_face)
+
     def test_truncated_model_download_is_not_promoted(self):
         with tempfile.TemporaryDirectory() as directory:
             response = FakeResponse(b"abc", 4)

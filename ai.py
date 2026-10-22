@@ -128,7 +128,8 @@ class AIEngine:
         from gfpgan import GFPGANer
         self.restorer = GFPGANer(
             model_path=_weight("gfpgan", self.log, self.progress), upscale=1, arch="clean",
-            channel_multiplier=2, bg_upsampler=None, device=self.device)
+            channel_multiplier=2, bg_upsampler=None, device=self.device,
+            model_rootpath=os.path.join(MODELS, "gfpgan"))
         self.can_face = True
 
     def upscale(self, img, scale, fast_cpu=False, progress=None):
